@@ -59,15 +59,16 @@ for (const pet of pets) {
 
 const CODEX_PETS = ['codex', 'dewey', 'fireball', 'hoots', 'rocky', 'seedy', 'stacky', 'bsod', 'null-signal']
 const ORIGINAL_PETS = ['cat', 'bot']
+const DERIVED_PETS = ['teal-hoot', 'violet-hoot', 'mint-hoot']
 
-assert.equal(pets.length, CODEX_PETS.length + ORIGINAL_PETS.length,
-  'the gallery holds the nine Codex pets and the two original ones')
+assert.equal(pets.length, CODEX_PETS.length + ORIGINAL_PETS.length + DERIVED_PETS.length,
+  'the gallery holds the nine Codex pets, the two original ones and the three derived ones')
 assert.ok(pets.some((pet) => pet.id === 'hoots'), 'hoots is in the gallery')
 assert.ok(!pets.some((pet) => pet.id === 'whale'), 'the whale is gone')
 assert.deepEqual(
   pets.map((pet) => pet.id),
-  [...CODEX_PETS, ...ORIGINAL_PETS],
-  'the gallery order follows the Codex app, then the original pets',
+  [...CODEX_PETS, ...ORIGINAL_PETS, ...DERIVED_PETS],
+  'the gallery order follows the Codex app, then the original pets, then the derived ones',
 )
 for (const pet of pets) {
   assert.equal(pet.grid.columns, 8, `${pet.id} has 8 columns`)
@@ -92,7 +93,7 @@ const missing = await routes.get('/api/dsh-pet/sprite').fetch(new Request('http:
 assert.equal(missing.status, 404, 'a removed pet answers 404')
 
 // The original pets are served exactly like the Codex ones.
-for (const id of ORIGINAL_PETS) {
+for (const id of [...ORIGINAL_PETS, ...DERIVED_PETS]) {
   const own = await routes.get('/api/dsh-pet/sprite').fetch(new Request(`http://x/api/dsh-pet/sprite?id=${id}`))
   assert.equal(own.status, 200, `the ${id} sprite answers 200`)
   assert.equal(own.headers.get('content-type'), 'image/webp', `the ${id} sprite is a webp`)

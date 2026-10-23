@@ -75,5 +75,26 @@
     "size": 200,
     "type": "sprite",
     "preview": "bot/preview.png"
+  },
+  {
+    "id": "teal-hoot",
+    "name": "Teal Hoot",
+    "size": 200,
+    "type": "sprite",
+    "preview": "teal-hoot/preview.png"
+  },
+  {
+    "id": "violet-hoot",
+    "name": "Violet Hoot",
+    "size": 200,
+    "type": "sprite",
+    "preview": "violet-hoot/preview.png"
+  },
+  {
+    "id": "mint-hoot",
+    "name": "Mint Hoot",
+    "size": 200,
+    "type": "sprite",
+    "preview": "mint-hoot/preview.png"
   }
 ]
