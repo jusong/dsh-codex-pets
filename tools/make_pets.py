@@ -286,6 +286,7 @@ class Rig:
             'arm': 0.0, 'stride': 0.0, 'wave': 0.0, 'face': 'open',
             'look': (0, 0), 'prop': None, 'blink': False,
             'yaw': 0.0, 'pitch': 0.0, 'turn': 0.0, 'hold': 0.0,
+            'facing': 0, 'gait': 0.0,
         }
         if row == 'idle':
             pose['squash'] = 1 + 0.04 * math.sin(phase)
@@ -299,6 +300,8 @@ class Rig:
             pose['dx'] = side * round(1.0 * math.sin(phase))
             pose['dy'] = -1 if frame % 2 else 0
             pose['lean'] = side * 3
+            pose['facing'] = side
+            pose['gait'] = phase
             pose['look'] = (side, 0)
             pose['wave'] = math.sin(phase)
             pose['face'] = 'happy'
@@ -357,6 +360,8 @@ class Rig:
             'look': (round(2 * yaw), round(3 * pitch)),
             'prop': None, 'blink': False, 'hold': 0.0,
             'yaw': yaw, 'pitch': pitch, 'turn': abs(yaw),
+            'facing': 1 if yaw > 0.5 else (-1 if yaw < -0.5 else 0),
+            'gait': 0.0,
         }
 
     # -- drawing ---------------------------------------------------------
@@ -416,69 +421,111 @@ class Cat(Rig):
     def draw_body(self, canvas, pose):
         x, y, head_x = self.geometry(pose)
         factor = self.width_factor(pose)
-        head_y = 22 + y + pose['head_dy']
-        # tail, curling up behind the body; it tucks in as the body turns
-        swing = pose['wave']
-        tuck = 1 - 0.35 * pose['turn']
-        tail = [(x + round(12 * tuck), 42 + y), (x + round(15 * tuck), 41 + y),
-                (x + round(17 * tuck), 37 + y),
-                (x + round(17 * tuck), 31 + y - round(swing * 2)),
-                (x + round(14 * tuck), 26 + y - round(swing * 2))]
-        self.stroke(canvas, tail, 3, self.c('outline'))
-        self.stroke(canvas, tail, 2, self.c('body'))
-        # haunches
-        half = int(round(14 * factor))
+        head_y = 20 + y + pose['head_dy']
+        direction = pose['facing'] if pose['facing'] else 1
+
+        # ---- the tail: it streams out behind the way the cat is going
+        self.draw_tail(canvas, pose, x, y)
+
+        # ---- the far pair of legs, behind the body
+        for off, phase in ((-8, math.pi), (8, 0.0)):
+            self.draw_leg(canvas, pose, x + int(round(off * factor)), y, phase,
+                          direction, behind=True)
+
+        # ---- the body
+        half = int(round(12 * factor))
         mask = self.mask_of(
-            lambda d: d.ellipse([x - half, 31 + y, x + half, 47 + y], fill=255))
+            lambda d: d.ellipse([x - half, 26 + y, x + half, 40 + y], fill=255))
         self.paint(canvas, mask, self.c('body'), self.c('shade'), self.c('light'))
-        # paws
-        for side in (-1, 1):
-            step = round(pose['stride'] * 2) * side
-            px = x + int(round(side * 7 * factor)) + step
-            mask = self.mask_of(
-                lambda d, px=px: d.ellipse([px - 5, 43 + y, px + 5, 48 + y], fill=255))
-            self.paint(canvas, mask, self.c('light'), self.c('shade'))
-        # a paw reaching for the ball of wool
+
+        # ---- the near pair of legs, in front of the body
+        for off, phase in ((-4, 0.0), (4, math.pi)):
+            self.draw_leg(canvas, pose, x + int(round(off * factor)), y, phase,
+                          direction, behind=False)
+
+        # ---- a paw reaching for the ball of wool
         if pose['hold'] > 0:
-            self.stroke(canvas, [(x + 6, 36 + y), (x + 4, 39 + y)], 2, self.c('outline'))
-            self.stroke(canvas, [(x + 6, 36 + y), (x + 4, 39 + y)], 1, self.c('body'))
-            canvas.ellipse(x + 4, 39 + y, 3, 3, self.c('light'))
-        # a waving paw
-        if pose['arm'] > 0:
-            lift = 11 * pose['arm']
-            path = [(x + 11, 38 + y), (x + 16, 32 + y - lift // 2),
-                    (x + 15, 23 + y - lift)]
-            self.stroke(canvas, path, 2, self.c('outline'))
-            self.stroke(canvas, path, 1, self.c('body'))
-            canvas.ellipse(x + 15, 22 + y - lift, 4, 4, self.c('light'))
-        # head
-        head_half = int(round(13 * factor))
+            self.stroke(canvas, [(x + 4, 37 + y), (x + 9, 40 + y)], 2, self.c('outline'))
+            self.stroke(canvas, [(x + 4, 37 + y), (x + 9, 40 + y)], 1, self.c('body'))
+            canvas.ellipse(x + 9, 40 + y, 3, 3, self.c('light'))
+
+        # ---- head
+        head_half = int(round(12 * factor))
         for side in (-1, 1):
             ex = head_x + int(round(side * 8 * factor))
-            canvas.poly([(ex - 5, head_y - 8), (ex + 2, head_y - 15),
-                         (ex + 6, head_y - 7)], self.c('outline'))
-            canvas.poly([(ex - 4, head_y - 8), (ex + 1, head_y - 14),
-                         (ex + 5, head_y - 8)], self.c('body'))
+            canvas.poly([(ex - 5, head_y - 7), (ex + 2, head_y - 14),
+                         (ex + 6, head_y - 6)], self.c('outline'))
+            canvas.poly([(ex - 4, head_y - 7), (ex + 1, head_y - 13),
+                         (ex + 5, head_y - 7)], self.c('body'))
         mask = self.mask_of(
-            lambda d: d.ellipse([head_x - head_half, head_y - 13,
-                                 head_x + head_half, head_y + 13], fill=255))
+            lambda d: d.ellipse([head_x - head_half, head_y - 12,
+                                 head_x + head_half, head_y + 12], fill=255))
         self.paint(canvas, mask, self.c('body'), self.c('shade'), self.c('light'))
         # stripes
         for offset in (-5, 0, 5):
-            canvas.line(head_x + offset, head_y - 12, head_x + offset + 2,
-                        head_y - 9, self.c('shade'))
+            canvas.line(head_x + offset, head_y - 11, head_x + offset + 2,
+                        head_y - 8, self.c('shade'))
         # a collar, so the head does not melt into the body
         collar = int(round(8 * factor))
-        canvas.rrect(head_x - collar, head_y + 11, head_x + collar, head_y + 14,
+        canvas.rrect(head_x - collar, head_y + 10, head_x + collar, head_y + 13,
                      1, self.c('collar'))
         # muzzle
         canvas.ellipse(head_x + self.face_shift(pose), head_y + 7,
-                       int(round(9 * factor)), 6, self.c('light'))
+                       int(round(8 * factor)), 5, self.c('light'))
+
+    def draw_leg(self, canvas, pose, lx, y, phase, direction, behind):
+        """One leg.
+
+        The two legs of a diagonal pair move together, the way a cat walks,
+        and the leg that swings forward lifts off the ground.
+        """
+        gait = pose['gait'] + phase
+        step = round(2 * math.sin(gait))
+        lift = 2 if math.cos(gait) > 0.3 else 0
+        waving = pose['arm'] > 0 and not behind and phase > 1
+        lx += step * direction
+        top = 31 + y
+        bottom = 45 + y - lift
+        if waving:
+            # the front right leg is raised, and the paw waves
+            bottom = 40 + y - round(2 * pose['wave'])
+            lx += round(2 * pose['wave'])
+        colour = self.c('shade') if behind else self.c('body')
+        canvas.rrect(lx - 2, top, lx + 2, bottom, 2, self.c('outline'))
+        canvas.rrect(lx - 1, top + 1, lx + 1, bottom - 1, 1, colour)
+        # the paw
+        canvas.ellipse(lx, bottom, 3, 2, self.c('outline'))
+        canvas.ellipse(lx, bottom, 2, 1, self.c('light'))
+
+    def draw_tail(self, canvas, pose, x, y):
+        """The tail trails the cat.
+
+        Sitting, it curls up beside the body. Walking, it streams out behind
+        -- on the opposite side from the direction of travel -- and it tucks
+        in as the body turns away from us.
+        """
+        facing = pose['facing']
+        side = -facing if facing else 1
+        tuck = 1 - 0.35 * pose['turn']
+        swing = pose['wave']
+        if facing == 0:
+            points = [(x + round(11 * tuck), 40 + y), (x + round(14 * tuck), 39 + y),
+                      (x + round(16 * tuck), 35 + y),
+                      (x + round(16 * tuck), 29 + y - round(swing * 2)),
+                      (x + round(13 * tuck), 24 + y - round(swing * 2))]
+        else:
+            points = [(x + side * round(9 * tuck), 40 + y),
+                      (x + side * round(13 * tuck), 39 + y),
+                      (x + side * round(16 * tuck), 36 + y),
+                      (x + side * round(17 * tuck), 32 + y - round(swing * 2)),
+                      (x + side * round(15 * tuck), 28 + y - round(swing * 2))]
+        self.stroke(canvas, points, 3, self.c('outline'))
+        self.stroke(canvas, points, 2, self.c('body'))
 
     def draw_face(self, canvas, pose):
         x, y, head_x = self.geometry(pose)
         factor = self.width_factor(pose)
-        head_y = 22 + y + pose['head_dy']
+        head_y = 20 + y + pose['head_dy']
         style = 'blink' if pose['blink'] else pose['face']
         shift = self.face_shift(pose)
         self.draw_eyes(canvas, head_x + shift, head_y - 2, 12 * factor, 4,
@@ -488,24 +535,23 @@ class Cat(Rig):
                      (head_x + shift + 3, head_y + 5),
                      (head_x + shift, head_y + 8)], self.c('outline'))
         for side in (-1, 1):
-            canvas.line(head_x + shift + side * int(round(10 * factor)), head_y + 6,
-                        head_x + shift + side * int(round(16 * factor)),
+            canvas.line(head_x + shift + side * int(round(9 * factor)), head_y + 6,
+                        head_x + shift + side * int(round(15 * factor)),
                         head_y + 5, self.c('outline'))
 
     def draw_extra(self, canvas, pose):
         x, y, head_x = self.geometry(pose)
         if pose['prop'] == 'magnifier':
-            head_y = 22 + y + pose['head_dy']
-            lens_x = head_x + 9
-            lens_y = 18 + y + pose['head_dy']
-            self.stroke(canvas, [(head_x + 4, head_y + 8), (lens_x - 2, lens_y + 4)],
+            head_y = 20 + y + pose['head_dy']
+            lens_x = head_x + 14
+            lens_y = head_y - 8
+            self.stroke(canvas, [(head_x + 10, head_y + 4), (lens_x - 4, lens_y + 2)],
                         2, self.c('outline'))
             self.stroke(canvas, [(head_x + 4, head_y + 8), (lens_x - 2, lens_y + 4)],
                         1, self.c('body'))
             self.magnifier(canvas, lens_x, lens_y)
         elif pose['prop'] == 'work':
-            self.yarn(canvas, x + 13, 41 + y)
-
+            self.yarn(canvas, x + 12, 42 + y)
 
 class Bot(Rig):
     id = 'bot'
