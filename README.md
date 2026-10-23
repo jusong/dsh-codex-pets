@@ -6,6 +6,8 @@ DSH Desktop 的 macOS 悬浮宠物：一只常驻在所有窗口之上的小家�
 
 内置 **9 只 Codex 官方宠物**（Codex / Dewey / Fireball / Hoots / Rocky / Seedy / Stacky / BSOD / Null Signal），全部是官方 v2 图集，会跟着光标转头。
 
+另外还有 **2 只原创**（Cat / Bot）、**6 只派生**（同一只猫头鹰或同一颗豆芽换色加饰品）和 **1 只自定义**（蓝色大肥鱼）——共 **18 只**。
+
 在 **DSH 设置 → 宠物** 里可以挑选宠物、调整它的大小，就像 Codex 的「Mini 与虚拟宠物」那样；设置写进 profile patch，改完立刻生效，不用重启 DSH。
 
 ---
@@ -428,6 +430,46 @@ python3 tools/derive_pets.py --only sky-seedy   # 只重生成一只
 
 ---
 
+## 1 只自定义宠物：蓝色大肥鱼
+
+`deepseek`（画廊里显示的名字是**蓝色大肥鱼**）不是官方那 9 只里的任何一只，而是**手工装进 Codex 的自定义宠物**：一只蓝发、尾巴渐变成鲸尾的二次元女仆助手。
+
+它在 Codex 里的位置是 `~/.codex/pets/deepseek-2/`，里面就是一个 `pet.json` 加一张 `spritesheet.webp`：
+
+```json
+{
+  "id": "deepseek",
+  "displayName": "蓝色大肥鱼",
+  "description": "一位蓝发、深海鲸鱼主题的可爱二次元女仆助手宠物，来自deepseek。",
+  "spriteVersionNumber": 2,
+  "spritesheetPath": "spritesheet.webp"
+}
+```
+
+> ✅ **这一只没有授权问题**：官方 9 只和那 6 只派生宠物都是 OpenAI 第一方资产（服务条款禁止复制发行），而这一只是自己生成、自己拥有的美术，可以放心留在公开仓里。
+
+**移植几乎是白拿的**：它已经是 **v2 形状**（1536×2288，8 列 × 11 行，每格 192×208），格子和行约定跟引擎要的完全一致，所以只需要补一份本项目方言的 manifest 和一张画廊预览图。
+
+### 帧数不必跟官方一样
+
+官方那 9 只的每一行帧数都不一样（idle 6 帧、running 8 帧、waving 4 帧……），而自定义宠物**不必照抄**：这一只的 **idle 行是 7 帧**，比官方多一帧。硬套官方的时长表就会丢掉最后一帧，或者多播一帧空气。
+
+所以 `tools/port_custom_pet.py` **自己数帧**：按 alpha 通道找每一行最后一个还有内容的格子（尾部空格不算帧），再把官方的时长表撑到这么长——**保持「每帧一个固定步长、最后一帧多停一会儿」这个规律**，idle 就变成 `[280, 110, 110, 140, 140, 140, 320]`。
+
+顺带也做了两件防呆的事：图集尺寸不是 1536×2288 就直接报错（生成器出来的东西尺寸经常不对，而引擎只会安静地画错格子）；一行中间出现空洞也会报错（那说明素材坏了，不是一行短）。
+
+### 也验过
+
+- `check_pets.py`：**18 只全部合格**。逐格量过包围盒——没有一帧碰到格子边，idle 行整体 `top=5 / bottom=203`（安全区是 2~204），跳跃行也不顶格。
+- 真的 WKWebView 里跑过：图集加载无报错、`rafCount` 持续增长、**四个方向的注视帧全对**（正上=行9第0格、正右=行9第4格、正下=行10第0格、正左=行10第4格），**点击会跳**（`animation` 变成 `jumping`）。
+
+```sh
+python3 tools/port_custom_pet.py ~/.codex/pets/deepseek-2 \
+    --id deepseek --name "蓝色大肥鱼"
+```
+
+---
+
 ## 工具
 
 ```sh
@@ -469,6 +511,10 @@ python3 tools/make_pets.py
 python3 tools/derive_pets.py
 python3 tools/derive_pets.py --only sky-seedy   # 只重生成一只
 python3 tools/derive_pets.py --debug            # 顺便出一张标注锚点的接触表
+
+# 移植一只手工装进 Codex 的自定义宠物（数帧、算时长、写 manifest 和预览图）
+python3 tools/port_custom_pet.py ~/.codex/pets/deepseek-2 \
+    --id deepseek --name "蓝色大肥鱼"
 
 # 校验全部宠物的图集契约：格子尺寸、帧是否齐、有没有越界
 python3 tools/check_pets.py
@@ -578,6 +624,9 @@ seedy 的头是个会转的立方体，正面时框宽约 103px，转过去明�
 
 **帽檐下面那圈阴影会把轮廓往外扩约 6px，饰品必须留够余量。**
 阴影是「形状 alpha → 模糊 → 整体下移 2px」画出来的，模糊让边缘往外洇了 6px。第一版没夹，8 帧的帽檐探出了格子边（`check_pets.py` 的 `touches the edge`）。所以帽檐中心要夹在 `8 + 半宽` 和 `格宽 - 8 - 半宽` 之间。
+
+**自定义宠物的帧数不必跟官方一致，硬套官方的时长表就会丢帧。**
+官方的时长表同时也是「这一行有几帧」的声明（idle 6 帧、running 8 帧、waving 4 帧）。自定义宠物不守这个规矩——`deepseek` 的 idle 行就是 **7 帧**。移植时要**按 alpha 通道数帧**（找这一行最后一个还有内容的格子），再把时长撑到这么长，同时保住「每帧一个固定步长、最后一帧多停一会儿」的规律。
 
 ---
 

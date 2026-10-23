@@ -117,5 +117,12 @@
     "size": 200,
     "type": "sprite",
     "preview": "lilac-seedy/preview.png"
+  },
+  {
+    "id": "deepseek",
+    "name": "蓝色大肥鱼",
+    "size": 200,
+    "type": "sprite",
+    "preview": "deepseek/preview.png"
   }
 ]
