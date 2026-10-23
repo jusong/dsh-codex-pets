@@ -1,2 +1,5 @@
 .DS_Store
 node_modules/
+__preview.html
+__pycache__/
+tools/.cache/

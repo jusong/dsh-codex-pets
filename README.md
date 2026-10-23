@@ -1,26 +1,140 @@
 # dsh-pet
 
-DSH Desktop 的 macOS 悬浮宠物：一只小鲸鱼常驻在所有窗口之上，拖动可以换位置，点击回到 DSH。
+DSH Desktop 的 macOS 悬浮宠物：一只常驻在所有窗口之上的小家伙，拖动可以换位置，点击回到 DSH。
+
+宠物是**纯数据**——一份 manifest 加一张精灵图集，播放逻辑全部由公共运行时提供。加一只新宠物不需要写代码。参考 Codex 的宠物方案。
+
+内置 **9 只 Codex 官方宠物**（Codex / Dewey / Fireball / Hoots / Rocky / Seedy / Stacky / BSOD / Null Signal），全部是官方 v2 图集，会跟着光标转头。
+
+在 **DSH 设置 → 宠物** 里可以挑选宠物、调整它的大小，就像 Codex 的「Mini 与虚拟宠物」那样；设置写进 profile patch，改完立刻生效，不用重启 DSH。
+
+---
 
 ## 为什么需要一个原生助手
 
 DSH 的宿主插件跑在独立的 Node 子进程里（`ELECTRON_RUN_AS_NODE=1`），拿不到 Electron 的 `BrowserWindow`。所以：
 
-- `lib/index.js` 是普通的 DSH 宿主插件，只负责启动/回收助手进程。
+- `lib/index.js` 是普通的 DSH 宿主插件，只负责解析 manifest、启动/回收助手进程。
 - `native/main.swift` 编译出的 `bin/dsh-pet-macos` 是一个 AppKit `NSPanel`，负责窗口、透明、置顶、跨 Space、点击激活 DSH。
+
+---
+
+## 宠物方案：宠物 = 数据
+
+这是本项目现在的核心。参考 Codex 的宠物方案：**宠物只提供数据，宿主负责播放**。
+
+```
+pets/<id>/
+├── pet.json          # manifest：图集路径、网格、动画行表
+├── spritesheet.webp  # 精灵图集
+└── preview.png       # 选择器里用的预览图
+```
+
+### manifest 契约
+
+```json
+{
+  "id": "hoots",
+  "name": "Hoots",
+  "description": "A sharp-eyed owl for polished work in a blink.",
+  "size": 200,
+  "preview": "preview.png",
+  "type": "sprite",
+  "spriteVersionNumber": 2,
+  "spritesheetPath": "spritesheet.webp",
+  "cell": { "width": 192, "height": 208 },
+  "grid": { "columns": 8, "rows": 11 },
+  "idle": "idle",
+  "animations": {
+    "idle":          { "row": 0, "durations": [280, 110, 110, 140, 140, 320] },
+    "running-right": { "row": 1, "durations": [120, 120, 120, 120, 120, 120, 120, 220] },
+    "running-left":  { "row": 2, "durations": [120, 120, 120, 120, 120, 120, 120, 220] },
+    "waving":        { "row": 3, "durations": [140, 140, 140, 280] },
+    "jumping":       { "row": 4, "durations": [140, 140, 140, 140, 280] },
+    "failed":        { "row": 5, "durations": [140, 140, 140, 140, 140, 140, 140, 240] },
+    "waiting":       { "row": 6, "durations": [150, 150, 150, 150, 150, 260] },
+    "running":       { "row": 7, "durations": [120, 120, 120, 120, 120, 220] },
+    "review":        { "row": 8, "durations": [150, 150, 150, 150, 150, 280] }
+  },
+  "drag": { "right": "running-right", "left": "running-left" },
+  "look": { "rows": [9, 10], "count": 16, "startDegrees": 0, "stepDegrees": 22.5 },
+  "react": { "click": "jumping" },
+  "idleRoutine": { "every": [3, 6], "animations": ["waiting", "waving", "running"] },
+  "perform": { "sequence": ["jumping", "waving"], "splash": "sparkle" }
+}
+```
+
+- `animations` 的每一项 = 图集的一行 + 每帧的毫秒数。**运行时不知道 "idle" 是什么意思**，它只按 manifest 播。
+- `durations` 允许逐帧不同，最后一帧通常拉长（Codex 的图集也是这个惯例）。
+- `look` 描述 16 个朝向：第 9 行放 `000°~157.5°`，第 10 行放 `180°~337.5°`，`000°` 是正上方。
+- `react.click` 是被点击时的反应动画（默认 `jumping`）。反应优先于注视，所以宠物是「跳起来回应你」，而不是「盯着你」。
+- `idleRoutine` 是宠物自己找点事做的清单：每 `every` 秒挑一行播一次，播完回到 idle。`every` 可以是固定秒数，也可以是 `[最小, 最大]` 区间——区间让动作落在不同的节拍上，才不像循环动画。
+
+### 图集契约
+
+| 项 | 值 |
+|---|---|
+| 尺寸 | `1536 × 2288` |
+| 网格 | 8 列 × 11 行 |
+| 单元格 | `192 × 208` |
+| 格式 | PNG 或 WebP，透明背景 |
+| 行 0-8 | 9 个标准动画行，语义见上表 |
+| 行 9-10 | 16 个朝向，顺时针，`000°` 为正上方 |
+
+没用到的格子必须全透明。**这套网格和 Codex 的宠物图集一致**，同一张图集可以直接装进 Codex。
+
+### 运行时负责什么
+
+`runtime/sprite-pet.js` 是播放器，`runtime/player.html` 是所有 sprite 宠物共用的页面：
+
+- 按 `durations` 逐帧播放；用 `requestAnimationFrame` 累加时间，帧率抖动不会累积误差
+- **自己找点事做**：按 manifest 的 `idleRoutine` 每隔几秒播一行别的动作，播完回到 idle（官方图集的 idle 只改表情，不加这个宠物看起来就是冻住的）
+- **光标跟随**：指针进入面板时，按指针相对宠物中心的角度选 16 向注视帧（这正是 Codex 那 16 行注视的用途）；指针离开后由原生助手通知页面回到动画
+- **拖拽**：拖动时按方向切 `running-right` / `running-left`，松手回到 idle
+- **表演**：`perform()` 播 manifest 里写好的动作序列，返回总时长；结束时触发一次庆祝粒子
+- **无障碍**：尊重系统「减少动态效果」，开启时只画 idle 首帧
+- **画布自适应**：`ResizeObserver` 盯住画布，首帧布局没完成时不会把画布压成 1×1
+
+公共部分（拖动/点击/消息桥）仍在 `runtime/pet-runtime.js`，由原生助手在 document start 注入。
+
+### 新增一只 sprite 宠物
+
+1. 做一张符合上面网格契约的图集，放进 `pets/<id>/spritesheet.webp`
+2. 写 `pets/<id>/pet.json`，把图集的行语义填进 `animations`
+3. 在 `pets/index.json` 里登记
+4. 在 **设置 → 宠物** 里选它（也可以在 config 里写 `pet: <id>`）
+
+不需要写任何 JS 或 HTML。设置页的画廊是运行时从 `pets/index.json` 读的，所以第 3 步做完刷新一下设置页就能看到新宠物。
+
+---
 
 ## 行为
 
 - `NSPanel` + `.floating` + `.canJoinAllSpaces` + `.fullScreenAuxiliary`：浮在普通窗口之上，跟随所有桌面。
+- 默认出现在屏幕右下、输入框上方，避免挡住发送按钮；拖到任意位置后会记住。
 - 点击宠物：`NSRunningApplication` 激活 `com.deepseek.dsh`；如果 DSH 没在运行，则打开 `/Applications/DeepSeek Harness.app`。
 - 拖动宠物：窗口跟着鼠标移动，位置保存在 `~/.dsh/dsh-pet-state.json`。
+- 原地表演：每隔 18–30 秒播一次 manifest 里定义的动作序列，结束时溅一圈庆祝粒子。
+  - 鼠标停在宠物上时会跳过本轮，避免在光标下突然动起来。
+  - 拖动会打断正在进行的表演；窗口位置只在拖动时改变，不会再自己横穿屏幕。
+- 闲时自己动：按 `idleRoutine` 每隔 3–6 秒播一次小动作（晃身、招手、干活），播完回到 idle。间隔是随机的，所以看起来像活的而不是循环动画。
+- 看人：光标在宠物身上时，宠物会转头盯着它（16 向注视帧）。**光标一移开，宠物立刻回到自己的动画**——盯着光标的那几帧是静止的，不松开就会一直冻在那个姿势上。
+- 被点一下：宠物会**跳一下**来回你（manifest 里的 `react.click`）。反应时注视会让位，所以你看得到的是跳跃而不是一张静止的脸；跳完回到闲时状态。点击仍然会把 DSH 唤到前台（这是宠物存在的意义）。
 - 助手每 1 秒检查 DSH 宿主 PID；宿主退出后自动退出。`flock` 保证同一时间只有一只宠物。
-- 纯本机 HTML/SVG，没有网络请求，不读凭据。
+- 纯本机资源，没有网络请求，不读凭据。
+
+---
 
 ## 安装
 
 ```sh
 dsh plugin --profile desktop add ./dsh-pet
+```
+
+插件用 `@deepseek-ai/schemastery` 声明自己的配置（两个 volatile 字段），装之前先装依赖：
+
+```sh
+npm install            # 或 pnpm install
 ```
 
 DSH Desktop 0.2.1 的 profile 由应用自己管理。如果装完没有立即出现宠物，在 `~/.dsh/profiles/desktop/cordis.patch.yml` 里加一行让 loader 热加载：
@@ -29,10 +143,163 @@ DSH Desktop 0.2.1 的 profile 由应用自己管理。如果装完没有立即�
 - id: dsh-pet
   name: dsh-pet
   config:
-    size: 150
+    pet: codex
+    size: 220
 ```
 
-重启 DSH 后，bundle 自己会加载，不需要这行手工配置。
+这行是**可选的**：不写就用插件自带 `cordis.patch.yml` 里的默认值，装好之后到 **设置 → 宠物** 里挑就行。重启 DSH 后，bundle 自己会加载，不需要这行手工配置。
+
+## 在设置里切换宠物和大小
+
+插件带一个**设置分区**，挂在 DSH 设置面板左侧导航的「宠物」上（`settings.section` slot，id `pet`）：
+
+- 列出宿主持有的每一只宠物（网格 + 预览图），**点一下就选中并立即生效**；
+- 上方是选中宠物的**实时动画预览**（直接读它的精灵图集，按 manifest 的帧时长播放）；
+- 下面是**尺寸滑块**（120–260 px），预览会跟着一起缩放；
+- **没有保存按钮**：`pet` / `size` 一改就写进 profile patch，宿主随即重启助手，桌面上的宠物当场换掉；
+- 「恢复默认」撤销这次覆盖（清掉 patch 里的配置项，回到插件自带默认值）。
+
+> 尺寸滑块不会在拖动的每一帧都写宿主——那样每拖一下就要重启一次助手。做法是：本地先记一个草稿值让预览跟着走，**手势结束**（松手 / 松键 / 失焦）或 500 毫秒后写一次，一次手势只写一次。
+
+同一套界面也挂在**插件页**上（`plugins.item` slot，id `dsh-pet`）：侧边栏「插件 → 内置插件配置 → 桌面宠物」，
+和「子智能体 / 网页搜索 / Agent 循环」这些官方卡片并列；点进去就是同一个选择器，插件卡片上显示一行
+「当前：Codex · 220 px」。
+
+实现分成两半，和 DSH 其它 UI 插件一样：
+
+| 文件 | 角色 |
+|---|---|
+| `lib/index.js` | 宿主半边。声明 `Config`，注册画廊/图集/预览三条 Fetch 路由，启动并看护原生助手 |
+| `lib/client.js` | 浏览器半边。注册 `settings.section` 与 `plugins.item`，渲染画廊、预览、滑块，调用 `ctx.configForms` 写设置 |
+
+两个设置都是 **volatile** 字段，所以 DSH 会把写入直接提交进运行中的引用，并用 `loader/volatile-update` 通知宿主——**宿主据此重启助手**，于是换宠物/改大小都不需要重启 DSH。
+
+画廊和图集走的是 DSH 的 **exact Fetch 路由**（`ctx.connection.fetch.register`），Web 版和 Desktop 版走的是同一条通路；Desktop 的渲染进程是 `dsh-app://` 自定义协议，fetch 经 IPC 桥转发到宿主，路由照样命中。
+
+也可以直接改配置：
+
+```yaml
+- id: dsh-pet
+  name: dsh-pet
+  config:
+    pet: hoots          # 对应 pets/hoots/pet.json
+    size: 220           # 省略时用 schema 默认值 220
+```
+
+`lib/index.js` 读 manifest，按 `spritesheetPath` 找到图集。找不到就退回画廊里第一只确实存在的宠物（默认宠物也是动态取出来的，删掉一只宠物不会把宿主指向空气）。
+
+> **注意**：DSH profile 的 patch 层（`~/.dsh/profiles/desktop/cordis.patch.yml`）优先级**高于**插件自带的 `cordis.patch.yml`。重装或切宠物后如果"没变化"，先查这一行：
+>
+> ```sh
+> grep -A3 '^- id: dsh-pet' ~/.dsh/profiles/desktop/cordis.patch.yml
+> ```
+>
+> 设置页写的就是这一行，所以它和设置页显示的值永远一致；手工改这一行同样会立即生效。
+
+---
+
+## 内置的 9 只 Codex 官方宠物
+
+| id | 名字 | 说明 |
+|---|---|---|
+| `codex` | Codex | The original Codex companion. |
+| `dewey` | Dewey | A calm companion for focused workspace days |
+| `fireball` | Fireball | Hot path energy for fast iteration |
+| `hoots` | Hoots | A sharp-eyed owl for polished work in a blink. |
+| `rocky` | Rocky | A steady rock when the diff gets larger |
+| `seedy` | Seedy | Small green shoots for new ideas |
+| `stacky` | Stacky | A balanced stack for deep work |
+| `bsod` | BSOD | A tiny blue-screen gremlin |
+| `null-signal` | Null Signal | Quiet signal from the void |
+
+图集是 **8×11（1536×2288，v2）**，行语义和本项目的契约完全一致：
+
+| 行 | 状态 | 用的列 | 帧时长 |
+|---|---|---|---|
+| 0 | idle | 0-5 | 280, 110, 110, 140, 140, 320 ms |
+| 1 | running-right | 0-7 | 120 ms each，末帧 220 |
+| 2 | running-left | 0-7 | 120 ms each，末帧 220 |
+| 3 | waving | 0-3 | 140 ms each，末帧 280 |
+| 4 | jumping | 0-4 | 140 ms each，末帧 280 |
+| 5 | failed | 0-7 | 140 ms each，末帧 240 |
+| 6 | waiting | 0-5 | 150 ms each，末帧 260 |
+| 7 | running | 0-5 | 120 ms each，末帧 220 |
+| 8 | review | 0-5 | 150 ms each，末帧 280 |
+| 9-10 | 16 个朝向 | 0-7 each | 静态帧，按角度选 |
+
+这套表直接抄自 Codex 桌面版自己的动画表（`requiredFramesByRow: [6,8,8,4,5,8,6,6,6,8,8]`），所以播放节奏和 Codex 里的表现一致。
+
+### 素材从哪来：CDN 和 app.asar 不是一回事
+
+**这是 `hoots` 当初没被移植过来的原因**，也是移植脚本里唯一有难度的部分：
+
+- **Codex 终端 CLI** 只认 **8 只**（codex / dewey / fireball / rocky / seedy / stacky / bsod / null-signal），图集由 OpenAI 的 CDN 发布：`persistent.oaistatic.com/codex/pets/v1/<id>-spritesheet-v4.webp`，形状是 **v1（8×9）**。
+- **Codex 桌面版（ChatGPT.app）** 打包了 **9 只**，多出来的那只就是 **`hoots`**（一只戴眼镜的猫头鹰）。它的图集不在 CDN 上，而是**直接打在 `app.asar` 里**，形状是 **v2（8×11）**。
+
+只按 CLI 的清单去枚举 CDN，永远也拿不到 `hoots`——它在那个枚举源里根本不存在。
+
+移植脚本因此默认从桌面版的 `app.asar` 里抽图集，并自动识别 v1 / v2 形状：
+
+```sh
+python3 tools/port_codex_pets.py                # 全部，默认读桌面版 app.asar
+python3 tools/port_codex_pets.py hoots          # 指定几只
+python3 tools/port_codex_pets.py --source cdn   # 改用 CDN 的 v1 图集
+```
+
+`app.asar` 的读法（踩坑记录）：文件是「8 字节 pickle 头 + 头块 + 数据段」，**数据段起点 = 8 + 头块长度**（头块长度的第 2 个 UInt32），头块里第一个 UInt32 是 JSON 长度，JSON 里每个文件的 `offset` 是相对数据段的偏移。少了任何一步都会把文件读成「上一个文件的尾巴 + 本文件少几个字节」。
+
+每个 manifest 的 `source` 字段记录了素材来源（桌面版时是 asar 里的路径，CDN 时是原始 URL）。
+
+### manifest 里多出来的两个小能力
+
+- `manifest.drag` — 拖拽时播哪两个动画。Codex 这批叫 `running-right` / `running-left`；做成可配的，以后自定义宠物可以叫别的。
+- `manifest.perform.splash` — 庆祝粒子类型。`"sparkle"` 是金色星星（Codex 这批），`true` 是水花，`false` 不要。
+
+---
+
+## 工具
+
+```sh
+# 引擎单测：时间轴、角度→注视帧映射、表演时序
+node tools/test-sprite-pet.mjs
+
+# 宿主半边自检：真的加载 lib/index.js，真的调那三条 Fetch 路由，
+# 断言画廊里有哪几只宠物、图集字节对不对、被删掉的宠物是不是 404
+node tools/check-host.mjs
+
+# 生成浏览器预览页（写到 pets/<id>/__preview.html）
+node tools/preview-sprite-pet.mjs hoots
+
+# 离屏渲染一张 PNG：走和原生助手完全一样的注入逻辑
+swiftc -O -swift-version 5 -framework AppKit -framework WebKit \
+  tools/render-pet.swift -o /tmp/render-pet
+/tmp/render-pet --pet-dir pets/hoots --runtime runtime --out /tmp/pet.png --after 1500
+
+# 往页面里塞一段脚本、再把引擎的状态读回来（端到端验证某个交互）
+/tmp/render-pet --pet-dir pets/bsod --runtime runtime --out /tmp/pet.png --after 1800 \
+  --script "document.dispatchEvent(new PointerEvent('pointermove', {clientX: 40, clientY: 5}))" \
+  --eval "JSON.stringify({look: window.__pet.lookFrame})"
+
+# 让真机助手把自己的状态倒出来：引擎版本、idle 循环有没有触发、画布尺寸对不对
+# 诊断模式还会跑两遍演练：
+#   注视演练——把面板挪到光标下 → 让页面看向光标 → 再挪开，走一遍「指针离开」
+#   点击演练——在页面里派发一次 pointerdown，看宠物是不是跳起来了
+bin/dsh-pet-macos --pet-dir pets/bsod --runtime runtime/pet-runtime.js \
+  --size 140 --lock /tmp/dsh-pet-diag.lock --diagnose 12000
+
+# 从 Codex 桌面版重新抽一遍全部素材（会覆盖 pets/ 下的图集和 manifest）
+python3 tools/port_codex_pets.py
+```
+
+
+移植脚本需要 Pillow；建议装在独立 venv 里（macOS 的系统 Python 是 externally-managed，`pip install` 会被 PEP 668 挡掉）：
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install Pillow
+.venv/bin/python tools/port_codex_pets.py
+```
+
+---
 
 ## 构建
 
@@ -45,12 +312,57 @@ lipo -create /tmp/dsh-pet-arm64 /tmp/dsh-pet-x86_64 -output bin/dsh-pet-macos
 codesign --force --sign - bin/dsh-pet-macos
 ```
 
+---
+
+## 踩过的坑
+
+**WKWebView 会拒绝 `loadHTMLString` 页面里的所有 file:// 资源。**
+`loadHTMLString(_:baseURL:)` 造出来的页面是 opaque origin，WebKit 直接拒绝加载 `file://` 子资源——**连合法的 `data:` URL 之外的任何图片都失败**，表现是"面板在、影子在、宠物画布全空"。必须用 `loadFileURL(_:allowingReadAccessTo:)` 让页面拿到 file:// origin。
+
+**`allowingReadAccessTo` 要覆盖页面和图集两边的公共祖先目录**，而且必须是带结尾斜杠的目录 URL，否则报 `Ignoring request to load this main resource because it is outside the sandbox`。
+
+**manifest 里的相对路径在原生壳里要解析成绝对路径。**
+播放器页面在 `runtime/` 下，`spritesheet.webp` 这种相对路径会指到 runtime 目录去。壳在注入 manifest 时把它解析成绝对 `file://` URL；浏览器预览里则保持相对（预览页就在宠物目录里）。
+
+**首帧布局竞态会让画布变成 1×1。**
+图集加载完成时页面可能还没排版完，`getBoundingClientRect()` 返回 0，画布被设成 1×1，宠物就永远看不见了。`ResizeObserver` + 每帧校验尺寸才能兜住。
+
+**DSH 的 Fetch 路由不能用 `requestBody: 'none'`。**
+`ctx.connection.fetch.register` 的 `requestBody` 只有 `buffered` / `streaming` 两种实际取值，宿主桥接会把**非 buffered** 的请求统一构造成带 body 的 `Request`；而 GET 请求带 body 会直接抛错，最终表现为 **400** 而不是 404。GET 路由一律写 `requestBody: 'buffered'`。
+
+**宿主默认不监视源码，改了插件代码不会自动生效。**
+DSH 的 HMR 基础配置是 `root: []`（只保留显式的配置监视），所以 `lib/*.js` 改了不会触发重载；但**改 profile 的 `cordis.patch.yml`** 会触发一次重合成，重合成会把「链接包」（软链到工作区的插件）里变化的文件换掉。想让改动生效，改一下 patch 就行，不用重启 DSH。
+
+**volatile 字段不会重新挂载插件。**
+DSH 的 Loader 比较原始配置时忽略 volatile 字段，只有 volatile 值变了就**就地提交**到运行中的引用，并给属主 fiber 发 `loader/volatile-update`；普通值变了才走重挂载。所以「改宠物/改大小」这条链路要靠 `ctx.on('loader/volatile-update', ...)` 接，而不是指望 `apply` 再跑一次。
+
+**Codex v2 图集的 idle 行只改表情，body 纹丝不动。**
+这就是「宠物不会自己动」的真正原因：不是引擎坏了，是素材本身在 idle 上就只动脸。把九行逐帧画出来一看就清楚了——`idle` / `jumping` / `review` 只有五官在变，`waiting`（晃身）、`waving`（抬手）、`running`（掏出笔记本）才是身体在动。所以 `idleRoutine` 只挑后者，`every` 给成 `[3, 6]` 区间免得像循环动画。**别用「变化像素总数」去选行**：某只宠物换个惊讶表情也能刷出上万像素，但肉眼一动不动。
+
+**想知道一行到底有没有「动身体」，得量宠物在格子里的位置，不是量像素。**
+量每一帧不透明像素的包围盒顶部：`jumping` 行的 top 序列是 `18 → 10 → 2 → 10 → 18`——一条完整的抛物线，宠物真的离地了（bsod 16px、rocky 42px、hoots 只有 7px 因为猫头鹰本来就顶到格子上沿）。只量「变化像素数」会得出「jumping 只是换了个表情」的错误结论，因为惊讶脸改的像素特别多。
+
+**`screencapture -l <windowID>` 对透明 NSPanel 会返回陈旧帧。**
+对着宠物窗口截图，连续抓十次可能是同一张旧画面，会得出「宠物完全没动」的错误结论。可靠做法是**全屏截图再裁剪**宠物区域（注意 `screencapture` 出的是 2 倍像素，裁剪坐标要 ×2）。
+
+**动画时钟在 WebView 里面，从外面看不见。**
+「宠物看起来不动」有太多可能：引擎坏了？rAF 没跑？素材不动？原生侧一个都判断不了。所以给助手加了 `--diagnose`：它往页面里注入一段探针，插桩引擎自己的 `step`/`play`，把「注入的是哪个版本的引擎、`idleElapsed` 涨到多少、`play()` 被调了哪些次、画布尺寸校验有没有提前返回」全打出来。同一段诊断还证明了引擎是好的——问题在选错了行。
+
+**WebView 只在光标位于它上方时才收得到指针事件，所以它永远不知道光标「离开了」。**
+盯着光标的那几行是静止帧，于是「点一下宠物 → 它转头看你 → 光标移开 → 它永远卡在那个姿势」。页面里的 `pointerleave` 在 WKWebView 里基本不会被投递，只能由**窗口**来通知：原生助手用 `NSTrackingArea`（`.activeAlways`，因为浮窗通常永远不是 key 窗口）加上对 `NSEvent.mouseLocation` 的轮询兜底，发现光标离开面板就调 `window.DSHPet.lookOut()`，页面清掉注视帧并回到动画。
+
+**`NSTrackingArea` 的常量名在 Swift 里不是 `.mouseEntered`。**
+SDK 里是 `NSTrackingArea.Options.mouseEnteredAndExited` / `.activeAlways` / `.inVisibleRect`（注意 `inVisible` 的驼峰）；而且 `NSTrackingAreaDelegate` 协议早就被删了，退出事件是发给 owner 的 `mouseExited(with:)`——所以 owner 得是 `NSResponder`。
+
+---
+
 ## 限制
 
 - 目前只支持 macOS；Windows/Linux 需要各自的置顶窗口实现。
-- 150×150 的透明窗口仍然是一个矩形命中区，宠物四周的透明角落会挡住点击；要彻底解决，需要全局鼠标监听做像素级 hit-test。
+- 200×200（可调 120–260，随设置里的尺寸滑块变化）的透明窗口仍然是一个矩形命中区，宠物四周的透明角落会挡住点击；要彻底解决，需要全局鼠标监听做像素级 hit-test。
 - 助手是 ad-hoc 签名，适合本机使用；分发给别人需要 Developer ID 签名和公证。
 - 置顶级别是 `.floating`。如果遇到某些全屏应用盖住宠物，可以把 `panel.level` 改成 `.screenSaver`（会更高，但也更侵入）。
+- sprite 宠物目前只消费 agent 状态里"没有状态"这一种情况；`running` / `waiting` / `failed` 这几行动画已经画好了，但宿主还没有把 DSH 的任务状态接过来。
 
 ## 卸载
 

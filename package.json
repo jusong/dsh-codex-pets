@@ -1,14 +1,39 @@
 {
   "name": "dsh-pet",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "A floating desktop pet for DSH Desktop (macOS): always on top, click to bring DSH forward.",
+  "description": "A floating desktop pet for DSH Desktop (macOS): always on top, pick a pet and set its size in Settings.",
   "type": "module",
   "main": "lib/index.js",
-  "files": ["lib", "bin", "assets", "cordis.patch.yml"],
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "lib",
+    "bin",
+    "pets",
+    "runtime",
+    "locale",
+    "icon.svg",
+    "cordis.patch.yml"
+  ],
+  "dependencies": {
+    "@deepseek-ai/schemastery": "3.18.5"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
     }
   }
 }

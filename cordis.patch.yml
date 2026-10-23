@@ -3,4 +3,5 @@
     - id: dsh-pet
       name: dsh-pet
       config:
-        size: 150
+        pet: codex
+        size: 220

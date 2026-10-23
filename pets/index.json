@@ -1,0 +1,65 @@
+[
+  {
+    "id": "codex",
+    "name": "Codex",
+    "size": 200,
+    "type": "sprite",
+    "preview": "codex/preview.png"
+  },
+  {
+    "id": "dewey",
+    "name": "Dewey",
+    "size": 200,
+    "type": "sprite",
+    "preview": "dewey/preview.png"
+  },
+  {
+    "id": "fireball",
+    "name": "Fireball",
+    "size": 200,
+    "type": "sprite",
+    "preview": "fireball/preview.png"
+  },
+  {
+    "id": "hoots",
+    "name": "Hoots",
+    "size": 200,
+    "type": "sprite",
+    "preview": "hoots/preview.png"
+  },
+  {
+    "id": "rocky",
+    "name": "Rocky",
+    "size": 200,
+    "type": "sprite",
+    "preview": "rocky/preview.png"
+  },
+  {
+    "id": "seedy",
+    "name": "Seedy",
+    "size": 200,
+    "type": "sprite",
+    "preview": "seedy/preview.png"
+  },
+  {
+    "id": "stacky",
+    "name": "Stacky",
+    "size": 200,
+    "type": "sprite",
+    "preview": "stacky/preview.png"
+  },
+  {
+    "id": "bsod",
+    "name": "BSOD",
+    "size": 200,
+    "type": "sprite",
+    "preview": "bsod/preview.png"
+  },
+  {
+    "id": "null-signal",
+    "name": "Null Signal",
+    "size": 200,
+    "type": "sprite",
+    "preview": "null-signal/preview.png"
+  }
+]
