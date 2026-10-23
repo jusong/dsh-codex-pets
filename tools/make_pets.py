@@ -186,7 +186,22 @@ class Rig:
         for x, y in points:
             canvas.ellipse(x, y, radius, radius, color)
 
-    def draw_eyes(self, canvas, x, y, r, look=(0, 0), style='open', sclera=False):
+    def draw_eyes(self, canvas, cx, cy, sep, radius, look=(0, 0), style='open',
+                  sclera=False, yaw=0.0, turn=0.0):
+        """Draw the eyes.
+
+        When the body is turned far to one side, the far eye disappears --
+        that is what sells the turn in a flat, pixel-art pet.
+        """
+        if turn > 0.55:
+            self._eye(canvas, cx + (sep * 0.5 if yaw > 0 else -sep * 0.5),
+                      cy, radius, look, style, sclera)
+            return
+        sep = sep * (1 - 0.4 * turn)
+        self._eye(canvas, cx - sep * 0.5, cy, radius, look, style, sclera)
+        self._eye(canvas, cx + sep * 0.5, cy, radius, look, style, sclera)
+
+    def _eye(self, canvas, x, y, r, look, style, sclera):
         if style == 'blink':
             canvas.line(x - r, y, x + r, y, self.c('outline'))
             return
@@ -215,6 +230,14 @@ class Rig:
             canvas.ellipse(px, py, max(1, r - 2), max(1, r - 2), self.c('pupil'))
         canvas.pixel(px - 1, py - 1, self.c('white'))
 
+    def width_factor(self, pose):
+        """How much the body is squeezed when it turns away from us."""
+        return 1 - 0.25 * pose.get('turn', 0.0)
+
+    def face_shift(self, pose):
+        """Where the face features slide when the head turns."""
+        return round(2 * pose.get('yaw', 0.0))
+
     def draw_mouth(self, canvas, x, y, style='smile', width=4):
         if style == 'smile':
             canvas.arc(x - width // 2, y - width // 2, x + width // 2, y + width // 2,
@@ -223,6 +246,41 @@ class Rig:
             canvas.ellipse(x, y, 1, 2, self.c('outline'))
         elif style == 'flat':
             canvas.line(x - width // 2, y, x + width // 2, y, self.c('outline'))
+
+    def mug(self, canvas, x, y):
+        """The 'busy' prop for a blob: a little cup."""
+        canvas.rrect(x - 4, y - 4, x + 4, y + 5, 1, self.c('outline'))
+        canvas.rrect(x - 3, y - 3, x + 3, y + 4, 1, self.c('white'))
+        canvas.d.ellipse([x + 3, y - 2, x + 7, y + 3], outline=self.c('outline'), width=1)
+
+    def yarn(self, canvas, x, y):
+        """The 'busy' prop for a cat: a ball of wool."""
+        canvas.ellipse(x, y, 6, 6, self.c('outline'))
+        canvas.ellipse(x, y, 5, 5, self.c('collar'))
+        canvas.ellipse(x - 2, y - 2, 2, 2, self.c('light'))
+        canvas.line(x - 4, y - 3, x + 4, y + 3, self.c('outline'))
+        canvas.line(x - 3, y + 4, x + 3, y - 4, self.c('outline'))
+
+    def lantern(self, canvas, x, y):
+        """The 'busy' prop for a ghost: a little lantern."""
+        canvas.rrect(x - 4, y - 5, x + 4, y + 5, 1, self.c('outline'))
+        canvas.rrect(x - 3, y - 4, x + 3, y + 4, 1, self.c('flame'))
+        canvas.ellipse(x, y, 1, 2, self.c('white'))
+        canvas.line(x - 3, y - 6, x + 3, y - 6, self.c('outline'))
+
+    def tablet(self, canvas, x, y):
+        """The 'busy' prop for a bot: a little screen with notes on it."""
+        canvas.rrect(x - 5, y - 4, x + 5, y + 4, 1, self.c('outline'))
+        canvas.rrect(x - 4, y - 3, x + 4, y + 3, 1, self.c('white'))
+        for offset in (-2, 0, 2):
+            canvas.line(x - 3, y + offset, x + 2, y + offset, self.c('eye'))
+
+    def watering_can(self, canvas, x, y):
+        """The 'busy' prop for a sprout: a watering can."""
+        canvas.rrect(x - 5, y - 4, x + 4, y + 5, 1, self.c('outline'))
+        canvas.rrect(x - 4, y - 3, x + 3, y + 4, 1, self.c('soil'))
+        canvas.line(x + 4, y - 2, x + 7, y - 5, self.c('outline'))
+        canvas.d.arc([x - 6, y - 6, x + 1, y + 1], 180, 270, fill=self.c('outline'), width=1)
 
     def magnifier(self, canvas, x, y):
         """The 'review' prop: a lens with a handle, held inside the body so
@@ -236,23 +294,33 @@ class Rig:
     # -- the pose --------------------------------------------------------
 
     def pose(self, row, frame, total):
-        """Turn (row, frame) into the numbers the drawing code reads."""
+        """Turn (row, frame) into the numbers the drawing code reads.
+
+        The nine action rows follow the Codex pets: the pet walks off to the
+        side, waves, jumps, slumps, glances around, and gets busy with
+        something. Only the face moves on the idle row.
+        """
         phase = 2 * math.pi * (frame / max(1, total))
         pose = {
-            'dx': 0, 'dy': 0, 'lean': 0, 'squash': 1.0, 'arm': 0.0,
-            'stride': 0.0, 'wave': 0.0, 'face': 'open', 'look': (0, 0),
-            'prop': None, 'blink': False,
+            'dx': 0, 'dy': 0, 'lean': 0, 'head_dy': 0, 'squash': 1.0,
+            'arm': 0.0, 'stride': 0.0, 'wave': 0.0, 'face': 'open',
+            'look': (0, 0), 'prop': None, 'blink': False,
+            'yaw': 0.0, 'pitch': 0.0, 'turn': 0.0, 'hold': 0.0,
         }
         if row == 'idle':
             pose['squash'] = 1 + 0.04 * math.sin(phase)
             pose['dy'] = -round(0.8 * math.sin(phase))
             pose['blink'] = frame == 4
         elif row in ('running-right', 'running-left'):
+            # walking that way: the body leans, the legs alternate, the tail
+            # swings and the eyes look where it is going
             side = 1 if row.endswith('right') else -1
             pose['stride'] = math.sin(phase)
             pose['dx'] = side * round(1.0 * math.sin(phase))
             pose['dy'] = -1 if frame % 2 else 0
-            pose['lean'] = side
+            pose['lean'] = side * 3
+            pose['look'] = (side, 0)
+            pose['wave'] = math.sin(phase)
             pose['face'] = 'happy'
         elif row == 'waving':
             pose['arm'] = 1.0
@@ -270,18 +338,46 @@ class Rig:
             pose['dx'] = 1 if frame % 2 else -1
             pose['face'] = 'x' if frame % 2 == 0 else 'sad'
         elif row == 'waiting':
+            # glancing around: the head turns, the eyes look off to the side
             pose['lean'] = round(3 * math.sin(phase))
-            pose['dx'] = pose['lean'] // 2
+            pose['head_dy'] = round(1.5 * math.sin(phase))
             pose['look'] = (round(2 * math.sin(phase)), 0)
+            pose['wave'] = math.sin(phase) * 0.7
+            pose['dx'] = pose['lean'] // 3
         elif row == 'running':
-            pose['stride'] = math.sin(phase)
-            pose['dy'] = -1 if frame % 2 else 0
-            pose['arm'] = abs(math.sin(phase))
+            # busy: holding something and looking down at it
+            pose['look'] = (0, 2)
+            pose['head_dy'] = 2
+            pose['hold'] = 1.0
+            pose['wave'] = math.sin(phase) * 0.5
+            pose['prop'] = 'work'
         elif row == 'review':
             pose['look'] = (0, 1)
             pose['prop'] = 'magnifier'
             pose['dy'] = -round(0.8 * math.sin(phase))
         return pose
+
+    def look_pose(self, index):
+        """One of the sixteen directions.
+
+        The Codex pets turn around their vertical axis, so their sixteen
+        frames are a turntable. We keep that for left and right -- the body
+        really turns -- and spend the vertical half of the compass on the
+        head instead: looking up tilts the head back, looking down ducks it.
+        """
+        angle = 2 * math.pi * index / 16
+        yaw = math.sin(angle)
+        pitch = -math.cos(angle)
+        return {
+            'dx': 0, 'dy': 0,
+            'lean': round(2 * yaw),
+            'head_dy': round(3 * pitch),
+            'squash': 1.0, 'arm': 0.0, 'stride': 0.0, 'wave': 0.0,
+            'face': 'open',
+            'look': (round(2 * yaw), round(3 * pitch)),
+            'prop': None, 'blink': False, 'hold': 0.0,
+            'yaw': yaw, 'pitch': pitch, 'turn': abs(yaw),
+        }
 
     # -- drawing ---------------------------------------------------------
 
@@ -303,11 +399,7 @@ class Rig:
 
     def draw_look(self, canvas, index):
         """One of the sixteen directions: 000 degrees (up) first, clockwise."""
-        angle = 2 * math.pi * index / 16
-        look = (round(math.sin(angle) * 2), round(-math.cos(angle) * 2))
-        pose = {'dx': 0, 'dy': 0, 'lean': 0, 'squash': 1.0, 'arm': 0.0,
-                'stride': 0.0, 'wave': 0.0, 'face': 'open', 'look': look,
-                'prop': None, 'blink': False}
+        pose = self.look_pose(index)
         self.draw_body(canvas, pose)
         self.draw_face(canvas, pose)
         canvas.outline(self.c('outline'))
@@ -334,7 +426,8 @@ class Blob(Rig):
 
     def geometry(self, pose):
         squash = pose['squash']
-        rx = int(round(17 / max(0.7, squash)))
+        factor = self.width_factor(pose)
+        rx = int(round(17 * factor / max(0.7, squash)))
         ry = int(round(20 * squash))
         cx = 24 + pose['dx']
         ground = 48 + pose['dy']
@@ -358,16 +451,19 @@ class Blob(Rig):
 
     def draw_face(self, canvas, pose):
         cx, cy, rx, ry = self.geometry(pose)
-        eye_y = cy - 3
+        eye_y = cy - 3 + pose['head_dy']
         style = 'blink' if pose['blink'] else pose['face']
-        self.draw_eyes(canvas, cx - 8, eye_y, 4, pose['look'], style)
-        self.draw_eyes(canvas, cx + 8, eye_y, 4, pose['look'], style)
-        self.draw_mouth(canvas, cx, eye_y + 10, 'smile', 7)
+        self.draw_eyes(canvas, cx + pose['lean'], eye_y, 16, 4, pose['look'], style,
+                       yaw=pose['yaw'], turn=pose['turn'])
+        self.draw_mouth(canvas, cx + pose['lean'] + self.face_shift(pose),
+                        eye_y + 10, 'smile', 7)
 
     def draw_extra(self, canvas, pose):
+        cx, cy, rx, ry = self.geometry(pose)
         if pose['prop'] == 'magnifier':
-            cx, cy, rx, ry = self.geometry(pose)
             self.magnifier(canvas, cx + 9, cy - 4)
+        elif pose['prop'] == 'work':
+            self.mug(canvas, cx + 13, cy + 8)
 
 
 # ---------------------------------------------------------------------------
@@ -398,74 +494,96 @@ class Cat(Rig):
 
     def draw_body(self, canvas, pose):
         x, y, head_x = self.geometry(pose)
-        # tail, curling up behind the body
-        tail = [(x + 12, 42 + y), (x + 15, 41 + y), (x + 17, 37 + y),
-                (x + 17, 31 + y - round(pose['wave'] * 2)),
-                (x + 14, 26 + y - round(pose['wave'] * 2))]
+        factor = self.width_factor(pose)
+        head_y = 22 + y + pose['head_dy']
+        # tail, curling up behind the body; it tucks in as the body turns
+        swing = pose['wave']
+        tuck = 1 - 0.35 * pose['turn']
+        tail = [(x + round(12 * tuck), 42 + y), (x + round(15 * tuck), 41 + y),
+                (x + round(17 * tuck), 37 + y),
+                (x + round(17 * tuck), 31 + y - round(swing * 2)),
+                (x + round(14 * tuck), 26 + y - round(swing * 2))]
         self.stroke(canvas, tail, 3, self.c('outline'))
         self.stroke(canvas, tail, 2, self.c('body'))
         # haunches
+        half = int(round(14 * factor))
         mask = self.mask_of(
-            lambda d: d.ellipse([x - 14, 31 + y, x + 14, 47 + y], fill=255))
+            lambda d: d.ellipse([x - half, 31 + y, x + half, 47 + y], fill=255))
         self.paint(canvas, mask, self.c('body'), self.c('shade'), self.c('light'))
         # paws
         for side in (-1, 1):
-            step = round(pose['stride']) * side
-            px = x + side * 7 + step
+            step = round(pose['stride'] * 2) * side
+            px = x + int(round(side * 7 * factor)) + step
             mask = self.mask_of(
                 lambda d, px=px: d.ellipse([px - 5, 43 + y, px + 5, 48 + y], fill=255))
             self.paint(canvas, mask, self.c('light'), self.c('shade'))
+        # a paw reaching for the ball of wool
+        if pose['hold'] > 0:
+            self.stroke(canvas, [(x + 6, 36 + y), (x + 4, 39 + y)], 2, self.c('outline'))
+            self.stroke(canvas, [(x + 6, 36 + y), (x + 4, 39 + y)], 1, self.c('body'))
+            canvas.ellipse(x + 4, 39 + y, 3, 3, self.c('light'))
         # a waving paw
         if pose['arm'] > 0:
             lift = 11 * pose['arm']
-            path = [(x + 11, 38 + y), (x + 16, 31 + y - lift // 2),
+            path = [(x + 11, 38 + y), (x + 16, 32 + y - lift // 2),
                     (x + 15, 23 + y - lift)]
             self.stroke(canvas, path, 2, self.c('outline'))
             self.stroke(canvas, path, 1, self.c('body'))
             canvas.ellipse(x + 15, 22 + y - lift, 4, 4, self.c('light'))
         # head
-        head_y = 22 + y
-        # ears
+        head_half = int(round(13 * factor))
         for side in (-1, 1):
-            ex = head_x + side * 8
+            ex = head_x + int(round(side * 8 * factor))
             canvas.poly([(ex - 5, head_y - 8), (ex + 2, head_y - 15),
                          (ex + 6, head_y - 7)], self.c('outline'))
             canvas.poly([(ex - 4, head_y - 8), (ex + 1, head_y - 14),
                          (ex + 5, head_y - 8)], self.c('body'))
         mask = self.mask_of(
-            lambda d: d.ellipse([head_x - 13, head_y - 13, head_x + 13, head_y + 13],
-                                fill=255))
+            lambda d: d.ellipse([head_x - head_half, head_y - 13,
+                                 head_x + head_half, head_y + 13], fill=255))
         self.paint(canvas, mask, self.c('body'), self.c('shade'), self.c('light'))
         # stripes
         for offset in (-5, 0, 5):
             canvas.line(head_x + offset, head_y - 12, head_x + offset + 2,
                         head_y - 9, self.c('shade'))
         # a collar, so the head does not melt into the body
-        canvas.rrect(head_x - 8, head_y + 11, head_x + 8, head_y + 14, 1, self.c('collar'))
+        collar = int(round(8 * factor))
+        canvas.rrect(head_x - collar, head_y + 11, head_x + collar, head_y + 14,
+                     1, self.c('collar'))
         # muzzle
-        canvas.ellipse(head_x, head_y + 7, 9, 6, self.c('light'))
+        canvas.ellipse(head_x + self.face_shift(pose), head_y + 7,
+                       int(round(9 * factor)), 6, self.c('light'))
 
     def draw_face(self, canvas, pose):
         x, y, head_x = self.geometry(pose)
-        head_y = 22 + y
+        factor = self.width_factor(pose)
+        head_y = 22 + y + pose['head_dy']
         style = 'blink' if pose['blink'] else pose['face']
-        self.draw_eyes(canvas, head_x - 6, head_y - 2, 4, pose['look'], style, sclera=True)
-        self.draw_eyes(canvas, head_x + 6, head_y - 2, 4, pose['look'], style, sclera=True)
-        canvas.poly([(head_x - 3, head_y + 5), (head_x + 3, head_y + 5),
-                     (head_x, head_y + 8)], self.c('outline'))
+        shift = self.face_shift(pose)
+        self.draw_eyes(canvas, head_x + shift, head_y - 2, 12 * factor, 4,
+                       pose['look'], style, sclera=True,
+                       yaw=pose['yaw'], turn=pose['turn'])
+        canvas.poly([(head_x + shift - 3, head_y + 5),
+                     (head_x + shift + 3, head_y + 5),
+                     (head_x + shift, head_y + 8)], self.c('outline'))
         for side in (-1, 1):
-            canvas.line(head_x + side * 10, head_y + 6, head_x + side * 16,
+            canvas.line(head_x + shift + side * int(round(10 * factor)), head_y + 6,
+                        head_x + shift + side * int(round(16 * factor)),
                         head_y + 5, self.c('outline'))
 
     def draw_extra(self, canvas, pose):
+        x, y, head_x = self.geometry(pose)
         if pose['prop'] == 'magnifier':
-            x, y, head_x = self.geometry(pose)
-            self.magnifier(canvas, head_x + 9, 18 + y)
-
-
-# ---------------------------------------------------------------------------
-# Ghost -- floats, and its hem never stops waving.
-# ---------------------------------------------------------------------------
+            head_y = 22 + y + pose['head_dy']
+            lens_x = head_x + 9
+            lens_y = 18 + y + pose['head_dy']
+            self.stroke(canvas, [(head_x + 4, head_y + 8), (lens_x - 2, lens_y + 4)],
+                        2, self.c('outline'))
+            self.stroke(canvas, [(head_x + 4, head_y + 8), (lens_x - 2, lens_y + 4)],
+                        1, self.c('body'))
+            self.magnifier(canvas, lens_x, lens_y)
+        elif pose['prop'] == 'work':
+            self.yarn(canvas, x + 13, 41 + y)
 
 class Ghost(Rig):
     id = 'ghost'
@@ -480,6 +598,7 @@ class Ghost(Rig):
         'pupil': '#2c2748',
         'white': '#ffffff',
         'glass': '#dcd8ff',
+        'flame': '#ffb347',
     }
 
     def geometry(self, pose):
@@ -489,17 +608,21 @@ class Ghost(Rig):
 
     def draw_body(self, canvas, pose):
         x, y = self.geometry(pose)
+        factor = self.width_factor(pose)
+        half = int(round(19 * factor))
         # the sheet: a wide dome over a straight skirt
         mask = ImageChops.lighter(
-            self.mask_of(lambda d: d.ellipse([x - 19, y - 19, x + 19, y + 11], fill=255)),
-            self.mask_of(lambda d: d.rectangle([x - 19, y + 4, x + 19, y + 15], fill=255)))
+            self.mask_of(lambda d: d.ellipse([x - half, y - 19, x + half, y + 11],
+                                              fill=255)),
+            self.mask_of(lambda d: d.rectangle([x - half, y + 4, x + half, y + 15],
+                                               fill=255)))
         self.paint(canvas, mask, self.c('body'), self.c('shade'), self.c('light'),
                    shade_start=0.6)
         # the hem: four little scallops
         wave = pose['wave']
         for i, dx in enumerate((-14, -4.7, 4.7, 14)):
             lift = round(math.sin(wave * 2 + i * 1.1) * 1.5)
-            sx = x + dx
+            sx = x + int(round(dx * factor))
             sy = y + 15 + lift
             scallop = self.mask_of(
                 lambda d, sx=sx, sy=sy: d.ellipse([sx - 4.7, sy - 5, sx + 4.7, sy + 5],
@@ -508,27 +631,26 @@ class Ghost(Rig):
         # mittens
         for side in (-1, 1):
             lift = pose['arm'] if side > 0 else max(0.0, pose['stride'])
-            mx = x + side * 16
+            mx = x + int(round(side * 16 * factor))
             my = y + 2 - round(7 * lift)
             canvas.ellipse(mx, my, 4, 4, self.c('outline'))
             canvas.ellipse(mx, my, 3, 3, self.c('body'))
 
     def draw_face(self, canvas, pose):
         x, y = self.geometry(pose)
+        factor = self.width_factor(pose)
         style = 'blink' if pose['blink'] else pose['face']
-        self.draw_eyes(canvas, x - 6, y - 3, 4, pose['look'], style)
-        self.draw_eyes(canvas, x + 6, y - 3, 4, pose['look'], style)
-        self.draw_mouth(canvas, x, y + 7, 'o')
+        self.draw_eyes(canvas, x + pose['lean'] + self.face_shift(pose),
+                       y - 3 + pose['head_dy'], 12 * factor, 4, pose['look'], style,
+                       yaw=pose['yaw'], turn=pose['turn'])
+        self.draw_mouth(canvas, x + pose['lean'] + self.face_shift(pose), y + 7, 'o')
 
     def draw_extra(self, canvas, pose):
+        x, y = self.geometry(pose)
         if pose['prop'] == 'magnifier':
-            x, y = self.geometry(pose)
             self.magnifier(canvas, x + 9, y - 4)
-
-
-# ---------------------------------------------------------------------------
-# Bot -- a boxy robot with a screen face and a bobbing antenna.
-# ---------------------------------------------------------------------------
+        elif pose['prop'] == 'work':
+            self.lantern(canvas, x + 9, y + 12)
 
 class Bot(Rig):
     id = 'bot'
@@ -552,6 +674,9 @@ class Bot(Rig):
 
     def draw_body(self, canvas, pose):
         x, y = self.geometry(pose)
+        factor = self.width_factor(pose)
+        head_x = x + pose['lean']
+        head_dy = pose['head_dy']
         # antenna
         tip = round(pose['wave'] * 3)
         self.stroke(canvas, [(x, 15 + y), (x + tip, 11 + y)], 1, self.c('outline'))
@@ -560,24 +685,27 @@ class Bot(Rig):
         # arms, drawn behind the torso so the body sits in front
         for side in (-1, 1):
             pump = pose['arm'] if side > 0 else pose['stride']
-            ax = x + side * 17
+            ax = x + int(round(side * (9 if pose['hold'] > 0 else 17 * factor)))
             ay = 36 + y - round(4 * abs(pump))
             canvas.rrect(ax - 3, ay, ax + 3, ay + 12, 3, self.c('outline'))
             canvas.rrect(ax - 2, ay + 1, ax + 2, ay + 11, 2, self.c('body'))
         # head
-        head_x = x + pose['lean']
+        head_half = int(round(14 * factor))
         mask = self.mask_of(
-            lambda d: d.rounded_rectangle([head_x - 14, 12 + y, head_x + 14, 32 + y],
+            lambda d: d.rounded_rectangle([head_x - head_half, 12 + y + head_dy,
+                                            head_x + head_half, 32 + y + head_dy],
                                           radius=7, fill=255))
         self.paint(canvas, mask, self.c('body'), self.c('shade'), self.c('light'))
         # screen
         screen = self.mask_of(
-            lambda d: d.rounded_rectangle([head_x - 9, 16 + y, head_x + 9, 28 + y],
-                                          radius=5, fill=255))
+            lambda d: d.rounded_rectangle(
+                [head_x - int(round(9 * factor)), 16 + y + head_dy,
+                 head_x + int(round(9 * factor)), 28 + y + head_dy], radius=5, fill=255))
         canvas.im.paste(Image.new('RGBA', (GW, GH), self.c('shade')), (0, 0), screen)
         # torso
+        half = int(round(11 * factor))
         mask = self.mask_of(
-            lambda d: d.rounded_rectangle([x - 11, 34 + y, x + 11, 46 + y],
+            lambda d: d.rounded_rectangle([x - half, 34 + y, x + half, 46 + y],
                                           radius=6, fill=255))
         self.paint(canvas, mask, self.c('body'), self.c('shade'), self.c('light'))
         # a little dial on the chest
@@ -585,47 +713,45 @@ class Bot(Rig):
         canvas.ellipse(x, 40 + y, 2, 2, self.c('eye'))
         # feet
         for side in (-1, 1):
-            step = round(pose['stride']) * side
-            fx = x + side * 8 + step
+            step = round(pose['stride'] * 2) * side
+            fx = x + int(round(side * 8 * factor)) + step
             canvas.rrect(fx - 5, 44 + y, fx + 5, 48 + y, 2, self.c('outline'))
             canvas.rrect(fx - 4, 45 + y, fx + 4, 47 + y, 1, self.c('light'))
 
     def draw_face(self, canvas, pose):
         x, y = self.geometry(pose)
+        factor = self.width_factor(pose)
         head_x = x + pose['lean']
         style = 'blink' if pose['blink'] else pose['face']
-        eye_y = 21 + y
-        if style == 'x':
-            for side in (-1, 1):
-                ex = head_x + side * 5
-                canvas.line(ex - 3, eye_y - 3, ex + 3, eye_y + 3, self.c('eye'))
-                canvas.line(ex - 3, eye_y + 3, ex + 3, eye_y - 3, self.c('eye'))
-            return
-        if style == 'blink':
-            for side in (-1, 1):
-                ex = head_x + side * 5
-                canvas.line(ex - 3, eye_y, ex + 3, eye_y, self.c('eye'))
-            return
-        if style == 'happy':
-            for side in (-1, 1):
-                ex = head_x + side * 5
-                canvas.arc(ex - 3, eye_y - 3, ex + 3, eye_y + 3, 200, 340, self.c('eye'))
-            return
-        for side in (-1, 1):
-            ex = head_x + side * 5 + pose['look'][0]
+        eye_y = 21 + y + pose['head_dy']
+        sep = int(round(5 * factor))
+        # the screen shows one eye when the bot is turned to the side
+        if pose['turn'] > 0.55:
+            sides = [1 if pose['yaw'] > 0 else -1]
+        else:
+            sides = (-1, 1)
+        for side in sides:
+            ex = head_x + side * sep + pose['look'][0]
             ey = eye_y + pose['look'][1]
+            if style == 'x':
+                canvas.line(ex - 3, ey - 3, ex + 3, ey + 3, self.c('eye'))
+                canvas.line(ex - 3, ey + 3, ex + 3, ey - 3, self.c('eye'))
+                continue
+            if style == 'blink':
+                canvas.line(ex - 3, ey, ex + 3, ey, self.c('eye'))
+                continue
+            if style == 'happy':
+                canvas.arc(ex - 3, ey - 3, ex + 3, ey + 3, 200, 340, self.c('eye'))
+                continue
             canvas.rect(ex - 3, ey - 3, ex + 3, ey + 3, self.c('eye'))
             canvas.pixel(ex - 1, ey - 1, self.c('white'))
 
     def draw_extra(self, canvas, pose):
+        x, y = self.geometry(pose)
         if pose['prop'] == 'magnifier':
-            x, y = self.geometry(pose)
             self.magnifier(canvas, x + 8, 38 + y)
-
-
-# ---------------------------------------------------------------------------
-# Sprout -- a bean with a leaf, standing in a little mound of soil.
-# ---------------------------------------------------------------------------
+        elif pose['prop'] == 'work':
+            self.tablet(canvas, x, 40 + y)
 
 class Sprout(Rig):
     id = 'sprout'
@@ -650,9 +776,12 @@ class Sprout(Rig):
 
     def draw_body(self, canvas, pose):
         x, y = self.geometry(pose)
+        factor = self.width_factor(pose)
         squash = pose['squash']
         # soil
-        mask = self.mask_of(lambda d: d.ellipse([x - 16, 36 + y, x + 16, 48 + y], fill=255))
+        mask = self.mask_of(
+            lambda d: d.ellipse([x - int(round(16 * factor)), 36 + y,
+                                 x + int(round(16 * factor)), 48 + y], fill=255))
         self.paint(canvas, mask, self.c('soil'), self.c('outline'), shade_start=0.7)
         # stem
         sway = round(pose['wave'] * 2)
@@ -661,13 +790,20 @@ class Sprout(Rig):
         self.stroke(canvas, stem, 1, self.c('shade'))
         # leaves
         for side in (-1, 1):
-            lx = x + sway + side * 8
-            ly = 12 + y + side
-            canvas.ellipse(lx, ly, 8, 4, self.c('outline'))
-            canvas.ellipse(lx, ly, 7, 3, self.c('body'))
+            lx = x + sway + int(round(side * 8 * factor))
+            ly = 12 + y + side + pose['head_dy']
+            canvas.ellipse(lx, ly, int(round(8 * factor)), 4, self.c('outline'))
+            canvas.ellipse(lx, ly, int(round(7 * factor)), 3, self.c('body'))
             canvas.ellipse(lx - side * 3, ly - 1, 3, 1, self.c('light'))
+        # arms
+        for side in (-1, 1):
+            lift = pose['arm'] if side > 0 else max(0.0, pose['stride'])
+            ax = x + int(round(side * 12 * factor))
+            ay = 26 + y - (3 if lift > 0.4 else 0)
+            canvas.ellipse(ax, ay, 3, 3, self.c('outline'))
+            canvas.ellipse(ax, ay, 2, 2, self.c('body'))
         # the bean
-        rx = int(round(14 / max(0.7, squash)))
+        rx = int(round(14 * factor / max(0.7, squash)))
         ry = int(round(14 * squash))
         mask = self.mask_of(
             lambda d: d.ellipse([x - rx, 33 + y - ry, x + rx, 33 + y + ry], fill=255))
@@ -676,16 +812,21 @@ class Sprout(Rig):
 
     def draw_face(self, canvas, pose):
         x, y = self.geometry(pose)
+        factor = self.width_factor(pose)
         style = 'blink' if pose['blink'] else pose['face']
-        eye_y = 32 + y
-        self.draw_eyes(canvas, x - 6, eye_y, 4, pose['look'], style)
-        self.draw_eyes(canvas, x + 6, eye_y, 4, pose['look'], style)
-        self.draw_mouth(canvas, x, eye_y + 10, 'smile', 7)
+        eye_y = 32 + y + pose['head_dy']
+        self.draw_eyes(canvas, x + pose['lean'] + self.face_shift(pose), eye_y,
+                       12 * factor, 4, pose['look'], style,
+                       yaw=pose['yaw'], turn=pose['turn'])
+        self.draw_mouth(canvas, x + pose['lean'] + self.face_shift(pose),
+                        eye_y + 10, 'smile', 7)
 
     def draw_extra(self, canvas, pose):
+        x, y = self.geometry(pose)
         if pose['prop'] == 'magnifier':
-            x, y = self.geometry(pose)
             self.magnifier(canvas, x + 9, 24 + y)
+        elif pose['prop'] == 'work':
+            self.watering_can(canvas, x + 11, 39 + y)
 
 
 PETS = [Blob(), Cat(), Ghost(), Bot(), Sprout()]
@@ -735,6 +876,16 @@ def prepare(pet):
             region[1] = min(region[1], box[1])
             region[2] = max(region[2], box[2])
             region[3] = max(region[3], box[3])
+    # the sixteen look frames turn the body, so they have a footprint of
+    # their own and they count towards the region
+    for index in range(16):
+        box = content_bbox(draw_grid_look(pet, index))
+        if box is None:
+            continue
+        region[0] = min(region[0], box[0])
+        region[1] = min(region[1], box[1])
+        region[2] = max(region[2], box[2])
+        region[3] = max(region[3], box[3])
     pet.region = tuple(region)
 
     idle_h = (idle[3] - idle[1]) * S
