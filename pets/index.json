@@ -96,5 +96,26 @@
     "size": 200,
     "type": "sprite",
     "preview": "mint-hoot/preview.png"
+  },
+  {
+    "id": "sky-seedy",
+    "name": "Sky Seedy",
+    "size": 200,
+    "type": "sprite",
+    "preview": "sky-seedy/preview.png"
+  },
+  {
+    "id": "rose-seedy",
+    "name": "Rose Seedy",
+    "size": 200,
+    "type": "sprite",
+    "preview": "rose-seedy/preview.png"
+  },
+  {
+    "id": "lilac-seedy",
+    "name": "Lilac Seedy",
+    "size": 200,
+    "type": "sprite",
+    "preview": "lilac-seedy/preview.png"
   }
 ]

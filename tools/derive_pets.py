@@ -3,17 +3,20 @@
 Derive new pets from an atlas that is already in the repository.
 
 A derived pet is the same character with a new coat of paint and a bit of
-dressing up:
+dressing up. How that is done depends on what the character is made of, so
+every source pet has a profile:
 
-  * the feathers are repainted by projecting every pixel onto the line
-    between the cream of the face plate and the orange of the feathers,
-    and mixing the two new colours in the same proportion. The cream face
-    plate and the white of the eyes keep their colour, the shadows and the
-    highlights keep their brightness, and nothing in between ever turns
-    into a colour that was not asked for
-  * accessories are drawn on top, positioned from the head: the crown is
-    found by walking up the sprite from the face plate, and the chin by
-    looking at where the cream of the face plate ends
+  hoots  the owl. Its colours lie on a single line -- the cream of the face
+         plate at one end, the orange of the feathers at the other -- so a
+         pixel can be projected onto that line and remapped. It wears a
+         knitted hat and a bow tie.
+
+  seedy  the sprout. Its body, its screen and its leaves are all pale and
+         only a couple of degrees of hue apart, so a projection would be
+         swamped by noise. Its colours are turned instead, and the parts
+         that are not coat -- the screen, the sprout, the blush -- are
+         masked out and kept. It wears a wide-brimmed hat, and the sprout
+         grows out of it.
 
 The animation rows, the frames and the timings are **not** touched: the
 derived atlas is the source atlas, edited in place. So a derived pet moves
@@ -49,8 +52,23 @@ FACE_MIN_VAL = 0.58
 FACE_MIN_AREA = 350
 FACE_MIN_WIDTH = 28
 
+# How far the sprout's head sticks up above its screen: the frame around
+# the screen, plus the line that frames it.
+HEAD_FRAME = 13
+
+# How wide the sprout's head is when it faces the camera. It is a box that
+# turns, so it is narrower on screen once it has turned, and the hat is
+# scaled by how much of it is actually visible.
+HEAD_WIDTH = 103
+
+# How each source pet is repainted and dressed.
+PROFILES = {
+    'hoots': {'recolour': 'axis', 'face': 'topmost', 'accessory': 'beanie'},
+    'seedy': {'recolour': 'rotate', 'face': 'largest', 'accessory': 'sunhat'},
+}
+
 # The variants that get built. Each one is a different coat of paint on the
-# same bird; the accessories are picked to sit well on that colour.
+# same character; the accessories are picked to sit well on that colour.
 VARIANTS = [
     {
         'id': 'teal-hoot',
@@ -88,19 +106,49 @@ VARIANTS = [
         'bow_tie': (240, 126, 168),
         'ink': (24, 30, 44),
     },
+    {
+        'id': 'sky-seedy',
+        'name': 'Sky Seedy',
+        'description': 'The little sprout in sky blue, wearing a straw hat.',
+        'source': 'seedy',
+        'shift': 160,
+        'tint': 1.0,
+        'hat': (238, 186, 80),
+        'ink': (72, 58, 38),
+    },
+    {
+        'id': 'rose-seedy',
+        'name': 'Rose Seedy',
+        'description': 'The little sprout in rose, wearing a teal hat.',
+        'source': 'seedy',
+        'shift': 315,
+        'tint': 1.0,
+        'hat': (26, 108, 118),
+        'ink': (72, 58, 38),
+    },
+    {
+        'id': 'lilac-seedy',
+        'name': 'Lilac Seedy',
+        'description': 'The little sprout in lilac, wearing a golden hat.',
+        'source': 'seedy',
+        'shift': 240,
+        'tint': 1.0,
+        'hat': (255, 196, 64),
+        'ink': (72, 58, 38),
+    },
 ]
-
-
-# The palette of the source bird, measured off the real atlas: the cream of
-# the face plate and the orange of the feathers. The beak and the little
-# wedge of forehead share the feather colour.
-CREAM = (253, 225, 181)
-FEATHER = (253, 125, 1)
 
 
 # ---------------------------------------------------------------------------
 # Recolouring
 # ---------------------------------------------------------------------------
+
+# The palette of the owl, measured off the real atlas: the cream of the
+# face plate and the orange of the feathers. The beak and the little wedge
+# of forehead share the feather colour.
+CREAM = (253, 225, 181)
+FEATHER = (253, 125, 1)
+
 
 def _lum(rgb):
     """The perceived brightness of a colour."""
@@ -178,19 +226,76 @@ def recolour(pixel, palette):
             int(min(255.0, max(0.0, base[2] * ratio))), a)
 
 
+def recolour_turn(pixel, context):
+    """Turn the hue of a pixel that is only wearing a coat of paint.
+
+    The sprout has no single pair of colours to mix between -- its body,
+    its screen and its leaves are all pale and a couple of degrees of hue
+    apart -- so its coat is painted by turning the hue of everything that
+    is not a face. Turning keeps the relative hue of the body and the
+    frame, so the character still looks like itself.
+    """
+    r, g, b, a = pixel
+    if a == 0:
+        return pixel
+    h, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+    if v < 0.45:
+        # the outline: keep it dark, but let a little of the new colour in
+        nr, ng, nb = colorsys.hsv_to_rgb((context['shift'] % 360) / 360,
+                                         min(s, 0.35), v)
+        return (int(nr * 255), int(ng * 255), int(nb * 255), a)
+    hue = (h * 360 + context['shift']) % 360
+    sat = min(1.0, s * (1 + 0.10 * context['tint']))
+    nr, ng, nb = colorsys.hsv_to_rgb(hue / 360, sat, v)
+    return (int(nr * 255), int(ng * 255), int(nb * 255), a)
+
+
+def protection_mask(cell, screen, head=None):
+    """Which pixels of a sprout frame are not wearing a coat of paint.
+
+    The screen in the middle of its face is the face, the sprout on its
+    head is who it is, and the green marks on its body are its own.
+    """
+    width, height = cell.size
+    pixels = cell.load()
+    mask = [[False] * width for _ in range(height)]
+    if screen is not None:
+        x0, y0, x1, y1 = screen
+        # the screen, and the dark line that frames it
+        for y in range(max(0, y0 - 4), min(height, y1 + 5)):
+            for x in range(max(0, x0 - 4), min(width, x1 + 5)):
+                mask[y][x] = True
+    # everything above the head is the sprout, whatever colour it is that
+    # frame: the leaves are lit on one side and in shadow on the other, and
+    # no colour rule catches both without catching the body. The top of the
+    # head is known even in the frames where the screen has turned away, so
+    # the sprout keeps its colour there too.
+    if head is not None:
+        head_top = head[0]
+    elif screen is not None:
+        head_top = screen[1] - HEAD_FRAME
+    else:
+        head_top = 0
+    for y in range(0, max(0, min(height, head_top + 4))):
+        for x in range(width):
+            mask[y][x] = True
+    for y in range(height):
+        for x in range(width):
+            r, g, b, a = pixels[x, y]
+            if a < 200:
+                continue
+            h, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+            hue = h * 360
+            if s >= 0.55 and 40 <= hue <= 100:
+                mask[y][x] = True          # the sprout and the green marks
+            elif s >= 0.22 and v >= 0.45 and (hue >= 300 or hue <= 30):
+                mask[y][x] = True          # the blush
+    return mask
+
+
 # ---------------------------------------------------------------------------
 # Finding the face
 # ---------------------------------------------------------------------------
-
-def _pixels(cell):
-    """The pixels of an image, in reading order.
-
-    Pillow 13 renamed ``getdata`` to ``get_flattened_data``; both spellings
-    are handled so the tool keeps working either way.
-    """
-    getter = getattr(cell, 'get_flattened_data', None) or cell.getdata
-    return list(getter())
-
 
 def _components(mask, width, height):
     """The connected components of a boolean mask."""
@@ -218,16 +323,8 @@ def _components(mask, width, height):
     return out
 
 
-def find_face(cell):
-    """Where the face plate is in this frame.
-
-    The face plate is the big warm cream shape. The highest cream blob is
-    the face -- the props the bird holds (a mug, a notepad, a book) sit
-    lower, and the belly catches a highlight but that is further down too.
-
-    Returns (x0, y0, x1, y1) or None when there is no cream at all, which
-    happens when the bird has turned its back on us.
-    """
+def _cream_blobs(cell):
+    """Every patch of warm cream in this frame."""
     width, height = cell.size
     pixels = cell.load()
     mask = [[False] * width for _ in range(height)]
@@ -239,13 +336,95 @@ def find_face(cell):
             h, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
             if s <= FACE_MAX_SAT and v >= FACE_MIN_VAL and r >= g >= b:
                 mask[y][x] = True
-    blobs = [c for c in _components(mask, width, height)
+    return _components(mask, width, height)
+
+
+def find_face(cell):
+    """Where the face plate is in this frame.
+
+    The face plate is the big warm cream shape. The highest cream blob is
+    the face -- the props the bird holds (a mug, a notepad, a book) sit
+    lower, and the belly catches a highlight but that is further down too.
+
+    Returns (x0, y0, x1, y1) or None when there is no cream at all, which
+    happens when the bird has turned its back on us.
+    """
+    blobs = [c for c in _cream_blobs(cell)
              if c[4] >= FACE_MIN_AREA and (c[2] - c[0]) >= FACE_MIN_WIDTH]
     if not blobs:
         return None
     # the topmost cream blob; a tie is broken by size
     x0, y0, x1, y1, _ = min(blobs, key=lambda c: (c[1], -c[4]))
     return (x0, y0, x1, y1)
+
+
+def find_screen(cell):
+    """Where the screen in the sprout's face is.
+
+    The screen is the bright cream rectangle in the middle of its face,
+    and a dark line separates it from the frame around it, so it can be
+    picked out on its own. The mask has to be tight: the frame is only a
+    shade darker, and a loose one swallows it.
+    """
+    width, height = cell.size
+    pixels = cell.load()
+    mask = [[False] * width for _ in range(height)]
+    for y in range(height):
+        for x in range(width):
+            r, g, b, a = pixels[x, y]
+            if a < 200:
+                continue
+            h, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+            if s <= 0.28 and v >= 0.90 and r >= g >= b:
+                mask[y][x] = True
+    blobs = [c for c in _components(mask, width, height) if c[4] >= 200]
+    if not blobs:
+        return None
+    x0, y0, x1, y1, _ = max(blobs, key=lambda c: c[4])
+    return (x0, y0, x1, y1)
+
+
+def find_head(cell):
+    """The top of the sprout's head, and how wide the head is on screen.
+
+    The sprout's head is a box with a colour of its own -- a yellow green
+    that nothing else on the sprite shares -- so the head can be found even
+    in the frames where it has turned far enough that the screen on its face
+    has narrowed to a sliver.
+
+    The catch is that the body wears a colour only a few degrees of hue
+    away from the head, so the colour on its own picks up the body too. The
+    body is always underneath the head, though, so the highest of the two
+    patches is the head.
+
+    Returns (top, centre_x, width) or None when there is no head at all.
+    """
+    pixels = cell.load()
+    width, height = cell.size
+    mask = [[False] * width for _ in range(height)]
+    for y in range(height):
+        for x in range(width):
+            if _is_frame(pixels[x, y]):
+                mask[y][x] = True
+    blobs = [b for b in _components(mask, width, height) if b[4] >= 120]
+    if not blobs:
+        return None
+    # the head is the patch that starts highest; the body starts lower
+    x0, y0, x1, y1, _area = min(blobs, key=lambda b: (b[1], -b[4]))
+    return (y0, (x0 + x1) // 2, x1 - x0)
+
+
+def _is_frame(pixel):
+    """Is this pixel the yellow green of the sprout's head or body?
+
+    The head is the brighter, greener end of the pair and the body the
+    duller end, so the cut sits between the two rather than on either one.
+    """
+    r, g, b, a = pixel
+    if a < 200:
+        return False
+    h, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+    return 48 <= h * 360 <= 78 and s <= 0.34 and v >= 0.50
 
 
 def sprite_box(cell):
@@ -400,6 +579,35 @@ def draw_bow_tie(cell, cx, cy, half_width, colour, ink):
     cell.alpha_composite(layer)
 
 
+def draw_sun_hat(cell, cx, brim_y, brim_hw, brim_hh, crown_hw, crown_h,
+                 colour, ink):
+    """A wide-brimmed hat that the sprout grows out of.
+
+    The crown is drawn first and the brim over it, so the crown looks like
+    it stands on the brim. The stem of the sprout disappears behind the
+    crown and comes out of the top of it.
+    """
+    width, height = cell.size
+    band_y = brim_y - brim_hh
+
+    def body(draw):
+        draw.pieslice([cx - crown_hw, brim_y - crown_h,
+                       cx + crown_hw, brim_y + crown_h],
+                      start=180, end=360, fill=colour, outline=ink, width=1)
+        draw.ellipse([cx - brim_hw, brim_y - brim_hh,
+                      cx + brim_hw, brim_y + brim_hh],
+                     fill=colour, outline=ink, width=1)
+        # a band around the crown, just above the brim
+        draw.rectangle([cx - crown_hw * 0.98, band_y - crown_h * 0.22,
+                        cx + crown_hw * 0.98, band_y + crown_h * 0.06],
+                       fill=colour, outline=ink, width=1)
+
+    _shadow(cell, body, ink)
+    layer = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+    body(ImageDraw.Draw(layer))
+    cell.alpha_composite(layer)
+
+
 def place_accessories(cell, variant, face, gaze=False):
     """Dress the frame up, using the head as the landmark."""
     if face is None:
@@ -454,14 +662,56 @@ def place_accessories(cell, variant, face, gaze=False):
                      variant['bow_tie'], variant['ink'])
 
 
+def place_hat(cell, variant, head):
+    """Put a wide-brimmed hat on the sprout.
+
+    The brim rests on the top edge of its head and the crown hides the
+    bottom of the stem, so the sprout comes out of the hat rather than
+    through it.
+
+    The head is a box that turns, so its width on screen shrinks as it
+    turns away and the hat is scaled to match: a hat that stays the same
+    size on a head that has turned reads as a hat floating in the air.
+    """
+    if head is None or 'hat' not in variant:
+        return
+    top, cx, width = head
+    scale = min(1.0, max(0.45, width / float(HEAD_WIDTH)))
+
+    brim_hw = int(HEAD_WIDTH * 0.64 * scale)
+    brim_hh = max(5, int(HEAD_WIDTH * 0.12 * scale))
+    crown_hw = max(10, int(HEAD_WIDTH * 0.30 * scale))
+    crown_h = max(10, int(HEAD_WIDTH * 0.40 * scale))
+
+    brim_y = top + 3
+    # the crown has to fit under the top of the cell
+    brim_y = max(brim_y, crown_h + 2)
+    # and the brim has to stay inside the cell, shadow and all
+    margin = 8
+    cx = max(margin + brim_hw, min(CELL_W - margin - brim_hw, cx))
+    draw_sun_hat(cell, cx, brim_y, brim_hw, brim_hh, crown_hw, crown_h,
+                 variant['hat'], variant['ink'])
+
+
 # ---------------------------------------------------------------------------
 # The derivation itself
 # ---------------------------------------------------------------------------
+
+def _pixels(cell):
+    """The pixels of an image, in reading order.
+
+    Pillow 13 renamed ``getdata`` to ``get_flattened_data``; both spellings
+    are handled so the tool keeps working either way.
+    """
+    getter = getattr(cell, 'get_flattened_data', None) or cell.getdata
+    return list(getter())
+
 
 def derive(variant, debug=False):
     """Build a new pet out of an existing one."""
     source = variant['source']
     target = variant['id']
+    profile = PROFILES[source]
     source_dir = os.path.join(PETS_DIR, source)
     with open(os.path.join(source_dir, 'pet.json'), encoding='utf-8') as handle:
         manifest = json.load(handle)
@@ -472,6 +722,7 @@ def derive(variant, debug=False):
     shift = variant['shift']
     tint = variant['tint']
     palette = build_palette(shift, tint, variant.get('shade', 0.85))
+    turn = {'shift': shift, 'tint': tint}
     anchors = []
     # the rows where the bird turns its head to look at something
     gaze_rows = set((manifest.get('look') or {}).get('rows') or [])
@@ -481,14 +732,30 @@ def derive(variant, debug=False):
             box = (column * CELL_W, row * CELL_H,
                    (column + 1) * CELL_W, (row + 1) * CELL_H)
             cell = atlas.crop(box)
-            # the face plate is found on the original frame: repainting can
-            # change how a colour reads, and the original is what the
-            # landmark was measured on
-            face = find_face(cell)
+            # the face is found on the original frame: repainting can change
+            # how a colour reads, and the original is what the landmark was
+            # measured on. The same goes for the head, which is found by the
+            # yellow green of its box -- a hue the repaint has already
+            # turned by the time the hat is placed.
+            face = find_face(cell) if profile['face'] == 'topmost' else find_screen(cell)
+            head = find_head(cell)
             anchors.append((row, column, face))
             recoloured = Image.new('RGBA', cell.size, (0, 0, 0, 0))
-            recoloured.putdata([recolour(p, palette) for p in _pixels(cell)])
-            place_accessories(recoloured, variant, face, gaze=row in gaze_rows)
+            if profile['recolour'] == 'axis':
+                recoloured.putdata([recolour(p, palette) for p in _pixels(cell)])
+            else:
+                mask = protection_mask(cell, face, head)
+                painted = []
+                for index, pixel in enumerate(_pixels(cell)):
+                    x = index % cell.size[0]
+                    y = index // cell.size[0]
+                    painted.append(pixel if mask[y][x]
+                                   else recolour_turn(pixel, turn))
+                recoloured.putdata(painted)
+            if profile['accessory'] == 'beanie':
+                place_accessories(recoloured, variant, face, gaze=row in gaze_rows)
+            else:
+                place_hat(recoloured, variant, head)
             atlas.paste(recoloured, box)
 
     target_dir = os.path.join(PETS_DIR, target)
@@ -562,7 +829,7 @@ def main():
     args = parser.parse_args()
 
     sys.path.insert(0, HERE)
-    print('deriving pets from hoots:')
+    print('deriving pets:')
     for variant in VARIANTS:
         if args.only and variant['id'] != args.only:
             continue
