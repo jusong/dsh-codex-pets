@@ -247,12 +247,6 @@ class Rig:
         elif style == 'flat':
             canvas.line(x - width // 2, y, x + width // 2, y, self.c('outline'))
 
-    def mug(self, canvas, x, y):
-        """The 'busy' prop for a blob: a little cup."""
-        canvas.rrect(x - 4, y - 4, x + 4, y + 5, 1, self.c('outline'))
-        canvas.rrect(x - 3, y - 3, x + 3, y + 4, 1, self.c('white'))
-        canvas.d.ellipse([x + 3, y - 2, x + 7, y + 3], outline=self.c('outline'), width=1)
-
     def yarn(self, canvas, x, y):
         """The 'busy' prop for a cat: a ball of wool."""
         canvas.ellipse(x, y, 6, 6, self.c('outline'))
@@ -261,26 +255,12 @@ class Rig:
         canvas.line(x - 4, y - 3, x + 4, y + 3, self.c('outline'))
         canvas.line(x - 3, y + 4, x + 3, y - 4, self.c('outline'))
 
-    def lantern(self, canvas, x, y):
-        """The 'busy' prop for a ghost: a little lantern."""
-        canvas.rrect(x - 4, y - 5, x + 4, y + 5, 1, self.c('outline'))
-        canvas.rrect(x - 3, y - 4, x + 3, y + 4, 1, self.c('flame'))
-        canvas.ellipse(x, y, 1, 2, self.c('white'))
-        canvas.line(x - 3, y - 6, x + 3, y - 6, self.c('outline'))
-
     def tablet(self, canvas, x, y):
         """The 'busy' prop for a bot: a little screen with notes on it."""
         canvas.rrect(x - 5, y - 4, x + 5, y + 4, 1, self.c('outline'))
         canvas.rrect(x - 4, y - 3, x + 4, y + 3, 1, self.c('white'))
         for offset in (-2, 0, 2):
             canvas.line(x - 3, y + offset, x + 2, y + offset, self.c('eye'))
-
-    def watering_can(self, canvas, x, y):
-        """The 'busy' prop for a sprout: a watering can."""
-        canvas.rrect(x - 5, y - 4, x + 4, y + 5, 1, self.c('outline'))
-        canvas.rrect(x - 4, y - 3, x + 3, y + 4, 1, self.c('soil'))
-        canvas.line(x + 4, y - 2, x + 7, y - 5, self.c('outline'))
-        canvas.d.arc([x - 6, y - 6, x + 1, y + 1], 180, 270, fill=self.c('outline'), width=1)
 
     def magnifier(self, canvas, x, y):
         """The 'review' prop: a lens with a handle, held inside the body so
@@ -408,65 +388,6 @@ class Rig:
 # ---------------------------------------------------------------------------
 # Blob -- a jelly that wobbles when it breathes and bounces when it lands.
 # ---------------------------------------------------------------------------
-
-class Blob(Rig):
-    id = 'blob'
-    name = 'Blob'
-    description = 'A soft teal jelly that wobbles when it breathes.'
-    palette = {
-        'outline': '#143b39',
-        'body': '#6fe3c8',
-        'shade': '#2ba894',
-        'light': '#cbfff1',
-        'eye': '#143b39',
-        'pupil': '#0b2422',
-        'white': '#ffffff',
-        'glass': '#bff3e6',
-    }
-
-    def geometry(self, pose):
-        squash = pose['squash']
-        factor = self.width_factor(pose)
-        rx = int(round(17 * factor / max(0.7, squash)))
-        ry = int(round(20 * squash))
-        cx = 24 + pose['dx']
-        ground = 48 + pose['dy']
-        return cx, ground - ry, rx, ry
-
-    def draw_body(self, canvas, pose):
-        cx, cy, rx, ry = self.geometry(pose)
-        # little arms
-        for side in (-1, 1):
-            lift = pose['arm'] if side > 0 else max(0.0, pose['stride'])
-            ax = cx + side * min(rx + 1, 17)
-            ay = cy + 4 - round(5 * lift)
-            mask = self.mask_of(
-                lambda d, ax=ax, ay=ay: d.ellipse([ax - 3, ay - 4, ax + 3, ay + 4], fill=255))
-            self.paint(canvas, mask, self.c('body'), self.c('shade'), shade_start=0.55)
-        # the jelly itself
-        mask = self.mask_of(
-            lambda d: d.ellipse([cx - rx, cy - ry, cx + rx, cy + ry], fill=255))
-        self.paint(canvas, mask, self.c('body'), self.c('shade'), self.c('light'),
-                   shade_start=0.45)
-
-    def draw_face(self, canvas, pose):
-        cx, cy, rx, ry = self.geometry(pose)
-        eye_y = cy - 3 + pose['head_dy']
-        style = 'blink' if pose['blink'] else pose['face']
-        self.draw_eyes(canvas, cx + pose['lean'], eye_y, 16, 4, pose['look'], style,
-                       yaw=pose['yaw'], turn=pose['turn'])
-        self.draw_mouth(canvas, cx + pose['lean'] + self.face_shift(pose),
-                        eye_y + 10, 'smile', 7)
-
-    def draw_extra(self, canvas, pose):
-        cx, cy, rx, ry = self.geometry(pose)
-        if pose['prop'] == 'magnifier':
-            self.magnifier(canvas, cx + 9, cy - 4)
-        elif pose['prop'] == 'work':
-            self.mug(canvas, cx + 13, cy + 8)
-
-
-# ---------------------------------------------------------------------------
 # Cat -- sits, flicks its tail, and leans while it waits.
 # ---------------------------------------------------------------------------
 
@@ -585,72 +506,6 @@ class Cat(Rig):
         elif pose['prop'] == 'work':
             self.yarn(canvas, x + 13, 41 + y)
 
-class Ghost(Rig):
-    id = 'ghost'
-    name = 'Ghost'
-    description = 'A little lavender ghost that floats and tugs at its hem.'
-    palette = {
-        'outline': '#4b4474',
-        'body': '#eae6ff',
-        'shade': '#b3abe4',
-        'light': '#ffffff',
-        'eye': '#4b4474',
-        'pupil': '#2c2748',
-        'white': '#ffffff',
-        'glass': '#dcd8ff',
-        'flame': '#ffb347',
-    }
-
-    def geometry(self, pose):
-        x = 24 + pose['dx']
-        y = 26 + pose['dy']
-        return x, y
-
-    def draw_body(self, canvas, pose):
-        x, y = self.geometry(pose)
-        factor = self.width_factor(pose)
-        half = int(round(19 * factor))
-        # the sheet: a wide dome over a straight skirt
-        mask = ImageChops.lighter(
-            self.mask_of(lambda d: d.ellipse([x - half, y - 19, x + half, y + 11],
-                                              fill=255)),
-            self.mask_of(lambda d: d.rectangle([x - half, y + 4, x + half, y + 15],
-                                               fill=255)))
-        self.paint(canvas, mask, self.c('body'), self.c('shade'), self.c('light'),
-                   shade_start=0.6)
-        # the hem: four little scallops
-        wave = pose['wave']
-        for i, dx in enumerate((-14, -4.7, 4.7, 14)):
-            lift = round(math.sin(wave * 2 + i * 1.1) * 1.5)
-            sx = x + int(round(dx * factor))
-            sy = y + 15 + lift
-            scallop = self.mask_of(
-                lambda d, sx=sx, sy=sy: d.ellipse([sx - 4.7, sy - 5, sx + 4.7, sy + 5],
-                                                   fill=255))
-            canvas.im.paste(Image.new('RGBA', (GW, GH), self.c('body')), (0, 0), scallop)
-        # mittens
-        for side in (-1, 1):
-            lift = pose['arm'] if side > 0 else max(0.0, pose['stride'])
-            mx = x + int(round(side * 16 * factor))
-            my = y + 2 - round(7 * lift)
-            canvas.ellipse(mx, my, 4, 4, self.c('outline'))
-            canvas.ellipse(mx, my, 3, 3, self.c('body'))
-
-    def draw_face(self, canvas, pose):
-        x, y = self.geometry(pose)
-        factor = self.width_factor(pose)
-        style = 'blink' if pose['blink'] else pose['face']
-        self.draw_eyes(canvas, x + pose['lean'] + self.face_shift(pose),
-                       y - 3 + pose['head_dy'], 12 * factor, 4, pose['look'], style,
-                       yaw=pose['yaw'], turn=pose['turn'])
-        self.draw_mouth(canvas, x + pose['lean'] + self.face_shift(pose), y + 7, 'o')
-
-    def draw_extra(self, canvas, pose):
-        x, y = self.geometry(pose)
-        if pose['prop'] == 'magnifier':
-            self.magnifier(canvas, x + 9, y - 4)
-        elif pose['prop'] == 'work':
-            self.lantern(canvas, x + 9, y + 12)
 
 class Bot(Rig):
     id = 'bot'
@@ -753,84 +608,10 @@ class Bot(Rig):
         elif pose['prop'] == 'work':
             self.tablet(canvas, x, 40 + y)
 
-class Sprout(Rig):
-    id = 'sprout'
-    name = 'Sprout'
-    description = 'A green bean sprout that sways its leaves and pops out of the soil.'
-    palette = {
-        'outline': '#2c4a29',
-        'body': '#93d76d',
-        'shade': '#5ba242',
-        'light': '#ddf8c6',
-        'eye': '#2c4a29',
-        'pupil': '#182a16',
-        'white': '#ffffff',
-        'glass': '#e6ffd6',
-        'soil': '#8a5a3b',
-    }
 
-    def geometry(self, pose):
-        x = 24 + pose['dx']
-        y = pose['dy']
-        return x, y
-
-    def draw_body(self, canvas, pose):
-        x, y = self.geometry(pose)
-        factor = self.width_factor(pose)
-        squash = pose['squash']
-        # soil
-        mask = self.mask_of(
-            lambda d: d.ellipse([x - int(round(16 * factor)), 36 + y,
-                                 x + int(round(16 * factor)), 48 + y], fill=255))
-        self.paint(canvas, mask, self.c('soil'), self.c('outline'), shade_start=0.7)
-        # stem
-        sway = round(pose['wave'] * 2)
-        stem = [(x, 30 + y), (x, 22 + y), (x + sway, 16 + y)]
-        self.stroke(canvas, stem, 2, self.c('outline'))
-        self.stroke(canvas, stem, 1, self.c('shade'))
-        # leaves
-        for side in (-1, 1):
-            lx = x + sway + int(round(side * 8 * factor))
-            ly = 12 + y + side + pose['head_dy']
-            canvas.ellipse(lx, ly, int(round(8 * factor)), 4, self.c('outline'))
-            canvas.ellipse(lx, ly, int(round(7 * factor)), 3, self.c('body'))
-            canvas.ellipse(lx - side * 3, ly - 1, 3, 1, self.c('light'))
-        # arms
-        for side in (-1, 1):
-            lift = pose['arm'] if side > 0 else max(0.0, pose['stride'])
-            ax = x + int(round(side * 12 * factor))
-            ay = 26 + y - (3 if lift > 0.4 else 0)
-            canvas.ellipse(ax, ay, 3, 3, self.c('outline'))
-            canvas.ellipse(ax, ay, 2, 2, self.c('body'))
-        # the bean
-        rx = int(round(14 * factor / max(0.7, squash)))
-        ry = int(round(14 * squash))
-        mask = self.mask_of(
-            lambda d: d.ellipse([x - rx, 33 + y - ry, x + rx, 33 + y + ry], fill=255))
-        self.paint(canvas, mask, self.c('body'), self.c('shade'), self.c('light'),
-                   shade_start=0.45)
-
-    def draw_face(self, canvas, pose):
-        x, y = self.geometry(pose)
-        factor = self.width_factor(pose)
-        style = 'blink' if pose['blink'] else pose['face']
-        eye_y = 32 + y + pose['head_dy']
-        self.draw_eyes(canvas, x + pose['lean'] + self.face_shift(pose), eye_y,
-                       12 * factor, 4, pose['look'], style,
-                       yaw=pose['yaw'], turn=pose['turn'])
-        self.draw_mouth(canvas, x + pose['lean'] + self.face_shift(pose),
-                        eye_y + 10, 'smile', 7)
-
-    def draw_extra(self, canvas, pose):
-        x, y = self.geometry(pose)
-        if pose['prop'] == 'magnifier':
-            self.magnifier(canvas, x + 9, 24 + y)
-        elif pose['prop'] == 'work':
-            self.watering_can(canvas, x + 11, 39 + y)
-
-
-PETS = [Blob(), Cat(), Ghost(), Bot(), Sprout()]
-
+# Only the pets that stand on legs make the cut: a jelly, a ghost and a
+# bean have nothing to walk with, and the walk rows need legs to read.
+PETS = [Cat(), Bot()]
 
 # ---------------------------------------------------------------------------
 # Rendering

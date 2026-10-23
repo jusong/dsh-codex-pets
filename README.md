@@ -257,17 +257,16 @@ python3 tools/port_codex_pets.py --source cdn   # 改用 CDN 的 v1 图集
 
 ---
 
-## 5 只原创宠物
+## 2 只原创宠物
 
-`blob` / `cat` / `ghost` / `bot` / `sprout` 是本项目自己画的。
+`cat` / `bot` 是本项目自己画的。
 
 | id | 名字 | 说明 |
 |---|---|---|
-| `blob` | Blob | A soft teal jelly that wobbles when it breathes. |
 | `cat` | Cat | A round ginger cat that swishes its tail and stretches when it hops. |
-| `ghost` | Ghost | A little lavender ghost that floats and tugs at its hem. |
 | `bot` | Bot | A little bot whose screen makes faces and whose antenna wobbles. |
-| `sprout` | Sprout | A green bean sprout that sways its leaves and pops out of the soil. |
+
+**只留有腿的。** 最早还画了果冻、幽灵、豆芽三只，但它们都没有腿——走路那两行（`running-right` / `running-left`）演不出来：没有腿就没有迈步，没有迈步就只能靠位移糊弄，看着像在飘。三只已经删掉，`tools/make_pets.py` 里也不留它们的代码。
 
 ### 为什么又画了一套
 
@@ -295,7 +294,7 @@ python3 tools/port_codex_pets.py --source cdn   # 改用 CDN 的 v1 图集
 | 4 | jumping | 蹲-起-顶-落-落地，顶点抬 4 格（16px，和官方一致） |
 | 5 | failed | 下沉、左右抖、X 眼 / 沮丧眼交替 |
 | 6 | waiting | **环顾四周**：脑袋左右转 ±3 格、眼睛往别处看、身体跟着晃、尾巴抖 |
-| 7 | running | **忙着干活**：手里拿着东西低头看——果冻端杯子、猫玩毛线球、幽灵提灯笼、机器人举平板、豆芽拎洒水壶 |
+| 7 | running | **忙着干活**：手里拿着东西低头看——猫玩毛线球、机器人举平板 |
 | 8 | review | 举放大镜低头看（放大镜用爪子连着，不是浮在空里） |
 | 9-10 | 16 个朝向 | 见下 |
 
@@ -318,7 +317,7 @@ python3 tools/port_codex_pets.py --source cdn   # 改用 CDN 的 v1 图集
 | 正左方 | 行 10 第 4 格 |
 
 ```sh
-python3 tools/make_pets.py          # 重画全部 5 只（图集 + preview + manifest）
+python3 tools/make_pets.py          # 重画全部 2 只（图集 + preview + manifest）
 python3 tools/check_pets.py          # 校验全部宠物的图集契约
 ```
 
@@ -359,7 +358,7 @@ bin/dsh-pet-macos --pet-dir pets/bsod --runtime runtime/pet-runtime.js \
 # 从 Codex 桌面版重新抽一遍全部素材（会覆盖 pets/ 下的图集和 manifest）
 python3 tools/port_codex_pets.py
 
-# 重画 5 只原创宠物（会覆盖 pets/{blob,cat,ghost,bot,sprout}/）
+# 重画 2 只原创宠物（会覆盖 pets/{cat,bot}/）
 python3 tools/make_pets.py
 
 # 校验全部宠物的图集契约：格子尺寸、帧是否齐、有没有越界
@@ -430,7 +429,7 @@ DSH 的 Loader 比较原始配置时忽略 volatile 字段，只有 volatile 值
 SDK 里是 `NSTrackingArea.Options.mouseEnteredAndExited` / `.activeAlways` / `.inVisibleRect`（注意 `inVisible` 的驼峰）；而且 `NSTrackingAreaDelegate` 协议早就被删了，退出事件是发给 owner 的 `mouseExited(with:)`——所以 owner 得是 `NSResponder`。
 
 **像素风一旦按比例缩放就废了。**
-第一版想「让每只宠物都长到官方那么大」，做法是量出各自的包围盒再乘一个系数缩放。结果 5 只宠物的缩放系数各不相同（1.30 / 0.96 / 1.30 / 0.86 / 1.00），同一张图集里像素块有 5.7px 的也有 3.4px 的——像素风最忌讳这个，看着像马赛克。**正确做法是按最终尺寸作画、缩放恒为 1**，尺寸差异靠「每只的设计」去补。
+第一版想「让每只宠物都长到官方那么大」，做法是量出各自的包围盒再乘一个系数缩放。结果每只宠物的缩放系数都不一样（1.30 / 0.96 / 1.30 / 0.86 / 1.00），同一批图集里像素块有 5.7px 的也有 3.4px 的——像素风最忌讳这个，看着像马赛克。**正确做法是按最终尺寸作画、缩放恒为 1**，尺寸差异靠「每只的设计」去补。
 
 **测包围盒必须看 alpha 通道，`Image.getbbox()` 会骗人。**
 对 RGBA 图直接调 `getbbox()`，PIL 会把**透明但有颜色**的像素也算进去，于是量出来的范围比真实内容大一圈。判断「有没有越界」时用 `img.getchannel('A').getbbox()`。
@@ -448,7 +447,7 @@ SDK 里是 `NSTrackingArea.Options.mouseEnteredAndExited` / `.activeAlways` / `.
 16 个方向里官方只有左右（指针在正上方时它转过来面对你），没有上下。我们把垂直的那一半交给俯仰：指针在上方就抬头、眼睛上移，指针在下方就低头、眼睛下移。抬低头 3 格（12px）才看得出来，2 格基本分辨不出。
 
 **道具要用对比色，而且得和爪子连上。**
-第一版「忙活」行的道具全是同色系：白杯子画在薄荷色果冻身上、玻璃灯笼画在淡紫幽灵身上、浅绿洒水壶画在绿色豆芽身上——在真机上全是「身体上多了一块颜色」。改用对比色（橙灯笼 / 棕色洒水壶 / 青毛线球）并且把爪子画到道具上，才看出是「拿着」。
+第一版「忙活」行的道具全是同色系：白杯子画在薄荷色果冻身上、玻璃灯笼画在淡紫幽灵身上、浅绿洒水壶画在绿色豆芽身上——在真机上全是「身体上多了一块颜色」。改用对比色（青毛线球 / 深灰平板）并且把爪子画到道具上，才看出是「拿着」。
 
 ---
 

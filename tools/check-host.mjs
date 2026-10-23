@@ -58,10 +58,10 @@ for (const pet of pets) {
 }
 
 const CODEX_PETS = ['codex', 'dewey', 'fireball', 'hoots', 'rocky', 'seedy', 'stacky', 'bsod', 'null-signal']
-const ORIGINAL_PETS = ['blob', 'cat', 'ghost', 'bot', 'sprout']
+const ORIGINAL_PETS = ['cat', 'bot']
 
 assert.equal(pets.length, CODEX_PETS.length + ORIGINAL_PETS.length,
-  'the gallery holds the nine Codex pets and the five original ones')
+  'the gallery holds the nine Codex pets and the two original ones')
 assert.ok(pets.some((pet) => pet.id === 'hoots'), 'hoots is in the gallery')
 assert.ok(!pets.some((pet) => pet.id === 'whale'), 'the whale is gone')
 assert.deepEqual(
