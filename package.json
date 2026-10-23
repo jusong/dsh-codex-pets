@@ -1,0 +1,14 @@
+{
+  "name": "dsh-pet",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A floating desktop pet for DSH Desktop (macOS): always on top, click to bring DSH forward.",
+  "type": "module",
+  "main": "lib/index.js",
+  "files": ["lib", "bin", "assets", "cordis.patch.yml"],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

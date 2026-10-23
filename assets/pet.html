@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  html, body {
+    width: 100%; height: 100%; margin: 0;
+    background: transparent; overflow: hidden;
+  }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    -webkit-user-select: none; user-select: none;
+    cursor: default;
+  }
+  #stage {
+    width: 96%; height: 96%;
+    display: flex; align-items: center; justify-content: center;
+    animation: bob 3.2s ease-in-out infinite;
+    will-change: transform;
+  }
+  #pet {
+    width: 100%; height: 100%;
+    cursor: pointer;
+    touch-action: none;
+    transition: transform .14s ease, filter .14s ease;
+    filter: drop-shadow(0 9px 10px rgba(8, 22, 44, .30));
+  }
+  #stage:hover #pet { transform: scale(1.045); filter: drop-shadow(0 11px 13px rgba(8, 22, 44, .34)); }
+  #pet.clicked { animation: pop .18s ease-out; }
+  .eye { transform-box: fill-box; transform-origin: center; animation: blink 4.8s infinite; }
+  @keyframes bob {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-4px); }
+  }
+  @keyframes pop {
+    0% { transform: scale(.94); }
+    60% { transform: scale(1.06); }
+    100% { transform: scale(1); }
+  }
+  @keyframes blink {
+    0%, 93%, 100% { transform: scaleY(1); }
+    95%, 97% { transform: scaleY(.08); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #stage, .eye { animation: none; }
+  }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <svg id="pet" viewBox="0 0 160 160" role="button" aria-label="DSH 宠物：点击回到 DSH" xmlns="http://www.w3.org/2000/svg">
+      <title>点击回到 DSH · 拖动可移动</title>
+      <defs>
+        <linearGradient id="whale" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#7fd4ff"/>
+          <stop offset="1" stop-color="#2f7fe0"/>
+        </linearGradient>
+        <linearGradient id="fin" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#4ba7f4"/>
+          <stop offset="1" stop-color="#2468c4"/>
+        </linearGradient>
+      </defs>
+
+      <ellipse cx="84" cy="139" rx="38" ry="6" fill="#0b1f3a" opacity=".14"/>
+
+      <!-- tail -->
+      <path d="M44 84 C26 72 19 56 23 45 C33 53 42 58 52 57 C46 67 45 75 51 84 Z" fill="url(#fin)"/>
+      <!-- body -->
+      <path d="M40 95 C40 69 63 52 89 54 C117 56 133 75 128 95 C123 117 99 127 75 122 C54 118 40 111 40 95 Z" fill="url(#whale)"/>
+      <!-- belly -->
+      <path d="M54 101 C63 115 82 121 100 115 C112 111 121 103 125 94 C113 107 92 111 76 107 C64 104 58 103 54 101 Z" fill="#eaf8ff" opacity=".92"/>
+      <!-- fin -->
+      <path d="M77 113 C84 123 95 125 101 119 C94 115 86 113 77 113 Z" fill="url(#fin)" opacity=".9"/>
+      <!-- eye -->
+      <g class="eye">
+        <circle cx="99" cy="80" r="7.5" fill="#10233f"/>
+        <circle cx="101.5" cy="77.5" r="2.6" fill="#fff"/>
+      </g>
+      <!-- cheek -->
+      <circle cx="113" cy="94" r="5.5" fill="#ff9fc0" opacity=".58"/>
+      <!-- smile -->
+      <path d="M104 99 Q110 105 118 100" stroke="#10233f" stroke-width="3.2" fill="none" stroke-linecap="round"/>
+      <!-- spout -->
+      <path d="M78 53 C76 43 80 35 86 31" stroke="#8fd8ff" stroke-width="5" fill="none" stroke-linecap="round"/>
+      <circle cx="86" cy="28" r="4.5" fill="#8fd8ff"/>
+      <circle cx="73" cy="35" r="3" fill="#8fd8ff"/>
+      <circle cx="97" cy="37" r="2.8" fill="#8fd8ff"/>
+    </svg>
+  </div>
+
+<script>
+  const pet = document.getElementById('pet')
+  let dragging = false
+
+  function send(type) {
+    try {
+      window.webkit?.messageHandlers?.pet?.postMessage({ type })
+    } catch {}
+  }
+
+  pet.addEventListener('pointerdown', (event) => {
+    dragging = true
+    try { pet.setPointerCapture(event.pointerId) } catch {}
+    send('down')
+    event.preventDefault()
+  })
+  pet.addEventListener('pointermove', (event) => {
+    if (!dragging) return
+    send('move')
+    event.preventDefault()
+  })
+  function end(event) {
+    if (!dragging) return
+    dragging = false
+    send('up')
+    pet.classList.add('clicked')
+    setTimeout(() => pet.classList.remove('clicked'), 200)
+    event.preventDefault()
+  }
+  pet.addEventListener('pointerup', end)
+  pet.addEventListener('pointercancel', end)
+  pet.addEventListener('contextmenu', (event) => event.preventDefault())
+
+  // Used by the helper's --self-test to exercise the real pointer path.
+  window.__petSelfTest = () => {
+    const options = { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', isPrimary: true }
+    pet.dispatchEvent(new PointerEvent('pointerdown', options))
+    pet.dispatchEvent(new PointerEvent('pointerup', options))
+  }
+</script>
+</body>
+</html>
