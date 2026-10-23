@@ -57,13 +57,17 @@ for (const pet of pets) {
   console.log(`  ${pet.id.padEnd(12)} ${String(pet.name).padEnd(12)} size=${pet.size} grid=${pet.grid.columns}x${pet.grid.rows} look=${pet.look ? 'yes' : 'no'}`)
 }
 
-assert.equal(pets.length, 9, 'the gallery holds the nine Codex pets')
+const CODEX_PETS = ['codex', 'dewey', 'fireball', 'hoots', 'rocky', 'seedy', 'stacky', 'bsod', 'null-signal']
+const ORIGINAL_PETS = ['blob', 'cat', 'ghost', 'bot', 'sprout']
+
+assert.equal(pets.length, CODEX_PETS.length + ORIGINAL_PETS.length,
+  'the gallery holds the nine Codex pets and the five original ones')
 assert.ok(pets.some((pet) => pet.id === 'hoots'), 'hoots is in the gallery')
 assert.ok(!pets.some((pet) => pet.id === 'whale'), 'the whale is gone')
 assert.deepEqual(
   pets.map((pet) => pet.id),
-  ['codex', 'dewey', 'fireball', 'hoots', 'rocky', 'seedy', 'stacky', 'bsod', 'null-signal'],
-  'the gallery order follows the Codex app',
+  [...CODEX_PETS, ...ORIGINAL_PETS],
+  'the gallery order follows the Codex app, then the original pets',
 )
 for (const pet of pets) {
   assert.equal(pet.grid.columns, 8, `${pet.id} has 8 columns`)
@@ -86,5 +90,19 @@ assert.ok((await preview.arrayBuffer()).byteLength > 1000, 'the preview has cont
 
 const missing = await routes.get('/api/dsh-pet/sprite').fetch(new Request('http://x/api/dsh-pet/sprite?id=whale'))
 assert.equal(missing.status, 404, 'a removed pet answers 404')
+
+// The original pets are served exactly like the Codex ones.
+for (const id of ORIGINAL_PETS) {
+  const own = await routes.get('/api/dsh-pet/sprite').fetch(new Request(`http://x/api/dsh-pet/sprite?id=${id}`))
+  assert.equal(own.status, 200, `the ${id} sprite answers 200`)
+  assert.equal(own.headers.get('content-type'), 'image/webp', `the ${id} sprite is a webp`)
+  const bytes = new Uint8Array(await own.arrayBuffer())
+  assert.ok(bytes.byteLength > 1000, `the ${id} atlas has content`)
+
+  const ownPreview = await routes.get('/api/dsh-pet/preview').fetch(new Request(`http://x/api/dsh-pet/preview?id=${id}`))
+  assert.equal(ownPreview.status, 200, `the ${id} preview answers 200`)
+  assert.equal(ownPreview.headers.get('content-type'), 'image/png', `the ${id} preview is a png`)
+  assert.ok((await ownPreview.arrayBuffer()).byteLength > 1000, `the ${id} preview has content`)
+}
 
 console.log('\nhost check: all assertions passed')

@@ -257,6 +257,44 @@ python3 tools/port_codex_pets.py --source cdn   # 改用 CDN 的 v1 图集
 
 ---
 
+## 5 只原创宠物
+
+`blob` / `cat` / `ghost` / `bot` / `sprout` 是本项目自己画的。
+
+| id | 名字 | 说明 |
+|---|---|---|
+| `blob` | Blob | A soft teal jelly that wobbles when it breathes. |
+| `cat` | Cat | A round ginger cat that swishes its tail and stretches when it hops. |
+| `ghost` | Ghost | A little lavender ghost that floats and tugs at its hem. |
+| `bot` | Bot | A little bot whose screen makes faces and whose antenna wobbles. |
+| `sprout` | Sprout | A green bean sprout that sways its leaves and pops out of the soil. |
+
+### 为什么又画了一套
+
+上面那 9 只官方宠物是 OpenAI 的**第一方美术资产**，不是开源素材：`ChatGPT.app/Contents/Resources/THIRD_PARTY_NOTICES.txt` 里只列第三方开源组件，**没有它们**；Codex 的服务条款把「复制、发行」和「逆向工程」都划为禁止，并明确写了 OpenAI 拥有 Services 的全部权利，还留着 copyright complaints 表格。
+
+也就是说，**把这 9 只镜像进一个公开仓库是有法律风险的**。原创这套不是为了「画得更好」，是为了让这个仓库和这个插件对外公开的那部分**是干净的**。
+
+（想继续用官方那 9 只、且不想分发素材，只有干净的做法是**运行时从 OpenAI 的公开 CDN 拉**，8 只都有；`hoots` 只存在于桌面版 app.asar 里，CDN 上没有。）
+
+### 宠物不是图片，是骨架
+
+`tools/make_pets.py` 里每只宠物是一小段 Python：几个形状 + 几条运动规则，渲染出来的图集和官方那套契约完全一样，**引擎分辨不出来源**。
+
+- 画在 **48×52 的网格**上，一个网格像素 = 4 个图像素，缩放**恒为 1**——保证每个像素块一样大。
+- 造型语言：硬边像素 + 垂直渐变阴影 + 左上高光 + 1px 描边。
+- 9 行动作和 16 向注视共用一套「姿势」规则：行 0 呼吸+眨眼，行 1/2 转身走，行 3 抬手挥，行 4 蹲-起-顶-落-落地，行 5 沮丧，行 6 晃动，行 7 快步，行 8 举放大镜；注视方向移动的是眼睛，眼白/虹膜/瞳孔分层，位移限制在眼眶内。
+- 帧时长直接抄官方那套，所以播放节奏和官方宠物一致。
+
+```sh
+python3 tools/make_pets.py          # 重画全部 5 只（图集 + preview + manifest）
+python3 tools/check_pets.py          # 校验全部宠物的图集契约
+```
+
+`check_pets.py` 会逐只检查：manifest 字段齐不齐、格子是不是 192×208、图集是不是 1536×2288、**manifest 真正用到的每一帧都非空**、没有一帧画到邻居格子里、静止时宠物既不悬空也不陷进地板、跳跃不会飞出格子。14 只（含官方那 9 只）全部通过。
+
+---
+
 ## 工具
 
 ```sh
@@ -289,10 +327,16 @@ bin/dsh-pet-macos --pet-dir pets/bsod --runtime runtime/pet-runtime.js \
 
 # 从 Codex 桌面版重新抽一遍全部素材（会覆盖 pets/ 下的图集和 manifest）
 python3 tools/port_codex_pets.py
+
+# 重画 5 只原创宠物（会覆盖 pets/{blob,cat,ghost,bot,sprout}/）
+python3 tools/make_pets.py
+
+# 校验全部宠物的图集契约：格子尺寸、帧是否齐、有没有越界
+python3 tools/check_pets.py
 ```
 
 
-移植脚本需要 Pillow；建议装在独立 venv 里（macOS 的系统 Python 是 externally-managed，`pip install` 会被 PEP 668 挡掉）：
+需要 Pillow 的脚本（移植 + 绘制 + 校验）建议装在独立 venv 里（macOS 的系统 Python 是 externally-managed，`pip install` 会被 PEP 668 挡掉）：
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install Pillow
@@ -353,6 +397,18 @@ DSH 的 Loader 比较原始配置时忽略 volatile 字段，只有 volatile 值
 
 **`NSTrackingArea` 的常量名在 Swift 里不是 `.mouseEntered`。**
 SDK 里是 `NSTrackingArea.Options.mouseEnteredAndExited` / `.activeAlways` / `.inVisibleRect`（注意 `inVisible` 的驼峰）；而且 `NSTrackingAreaDelegate` 协议早就被删了，退出事件是发给 owner 的 `mouseExited(with:)`——所以 owner 得是 `NSResponder`。
+
+**像素风一旦按比例缩放就废了。**
+第一版想「让每只宠物都长到官方那么大」，做法是量出各自的包围盒再乘一个系数缩放。结果 5 只宠物的缩放系数各不相同（1.30 / 0.96 / 1.30 / 0.86 / 1.00），同一张图集里像素块有 5.7px 的也有 3.4px 的——像素风最忌讳这个，看着像马赛克。**正确做法是按最终尺寸作画、缩放恒为 1**，尺寸差异靠「每只的设计」去补。
+
+**测包围盒必须看 alpha 通道，`Image.getbbox()` 会骗人。**
+对 RGBA 图直接调 `getbbox()`，PIL 会把**透明但有颜色**的像素也算进去，于是量出来的范围比真实内容大一圈。判断「有没有越界」时用 `img.getchannel('A').getbbox()`。
+
+**手动画的宠物要给跳跃和下垂留够余量。**
+48×52 的网格不是随便画的：静止时脚底踩在格子底部往上 1 格的地方，行 5（沮丧）要再往下沉 1 格，行 4（跳跃）要往上抬 4 格。第一版没留余量，结果跳跃的顶点直接顶出格子（`top=0`），机器人的手臂还被算到了脚下（`ay` 随 `pump` 变负就往下跑）。**每一帧都要量一遍包围盒，确认没有一帧碰到网格最外圈**，`tools/check_pets.py` 现在就在做这件事。
+
+**裁剪区要整体居中，不能拿 idle 帧去对齐。**
+图集是「按每只宠物的实际footprint 裁剪 → 缩放 → 放进格子」。一开始用 idle 帧的水平中心去对齐裁剪区，结果猫被甩偏了 10px，**胡须尖端被切掉**——而且只有「等待」这一行看得出来（它会把头偏到一边）。裁剪区本身就居中，因为宠物本来就是按网格中线设计的。
 
 ---
 

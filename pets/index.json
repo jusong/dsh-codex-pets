@@ -61,5 +61,40 @@
     "size": 200,
     "type": "sprite",
     "preview": "null-signal/preview.png"
+  },
+  {
+    "id": "blob",
+    "name": "Blob",
+    "size": 200,
+    "type": "sprite",
+    "preview": "blob/preview.png"
+  },
+  {
+    "id": "cat",
+    "name": "Cat",
+    "size": 200,
+    "type": "sprite",
+    "preview": "cat/preview.png"
+  },
+  {
+    "id": "ghost",
+    "name": "Ghost",
+    "size": 200,
+    "type": "sprite",
+    "preview": "ghost/preview.png"
+  },
+  {
+    "id": "bot",
+    "name": "Bot",
+    "size": 200,
+    "type": "sprite",
+    "preview": "bot/preview.png"
+  },
+  {
+    "id": "sprout",
+    "name": "Sprout",
+    "size": 200,
+    "type": "sprite",
+    "preview": "sprout/preview.png"
   }
 ]
