@@ -663,6 +663,7 @@ final class PetController: NSObject, NSApplicationDelegate {
         createPanel()
         startClocks()
         watchParent()
+        watchCommands()
         if dragBench {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.runDragBenchmark() }
         } else if performNow {
@@ -1018,6 +1019,53 @@ final class PetController: NSObject, NSApplicationDelegate {
             configuration: NSWorkspace.OpenConfiguration(),
             completionHandler: nil
         )
+    }
+
+    /**
+     * Take commands from the host on stdin, one per line.
+     *
+     * `size N` resizes the pet while it stays on screen: the settings page
+     * writes the slider's value on every step, and restarting the helper
+     * for each one would make the pet vanish and come back again and again.
+     * Anything else, and a closed pipe, is ignored.
+     */
+    private func watchCommands() {
+        var pending = Data()
+        FileHandle.standardInput.readabilityHandler = { [weak self] handle in
+            let chunk = handle.availableData
+            // End of input: nobody is going to write any more.
+            guard !chunk.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            pending.append(chunk)
+            while let newline = pending.firstIndex(of: 0x0A) {
+                let line = String(decoding: pending[pending.startIndex..<newline], as: UTF8.self)
+                pending.removeSubrange(pending.startIndex...newline)
+                let parts = line.split(separator: " ")
+                guard parts.count == 2, parts[0] == "size", let value = Double(parts[1]) else { continue }
+                DispatchQueue.main.async { self?.resize(to: CGFloat(value)) }
+            }
+        }
+    }
+
+    /// Change the panel's edge, keeping the pet's centre where it is.
+    private func resize(to requested: CGFloat) {
+        let edge = min(260, max(120, requested.rounded()))
+        guard edge != size else { return }
+        let old = panel.frame
+        var origin = NSPoint(x: old.midX - edge / 2, y: old.midY - edge / 2)
+        // A pet that grows past the edge of its screen is pulled back in.
+        if let visible = (panel.screen ?? NSScreen.main)?.visibleFrame {
+            origin.x = min(max(origin.x, visible.minX), max(visible.minX, visible.maxX - edge))
+            origin.y = min(max(origin.y, visible.minY), max(visible.minY, visible.maxY - edge))
+        }
+        size = edge
+        panel.setFrame(NSRect(x: origin.x, y: origin.y, width: edge, height: edge), display: true)
+        if let view = panel.contentView {
+            player.layout(in: view.bounds, scale: panel.backingScaleFactor)
+        }
+        saveOrigin()
     }
 
     private func watchParent() {
