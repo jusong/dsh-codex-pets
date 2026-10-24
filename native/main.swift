@@ -493,7 +493,7 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
     /// on unchanged: the page still needs it to play the pet's reaction.
     private func watchPresses() {
         mouseMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.leftMouseDown, .leftMouseUp]
+            matching: [.leftMouseDown, .leftMouseUp, .leftMouseDragged]
         ) { [weak self] event in
             self?.handleMouseEvent(event)
             return event
@@ -523,6 +523,16 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
             dropGaze()
         case .leftMouseUp:
             finishDrag()
+        case .leftMouseDragged:
+            // Move the window the moment the drag event arrives, the way
+            // native window dragging does: the follow timer alone polls the
+            // cursor at the refresh rate, and a busy main run loop -- the
+            // WebView does real work for every one of these events -- can
+            // hold a tick back until the pet visibly trails the cursor.
+            // Catching up inside the event itself means the pet follows
+            // whenever the run loop touches the event stream at all, and
+            // the timer stays only as a backstop.
+            followCursor()
         default:
             break
         }
@@ -897,6 +907,13 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
         var line = data
         line.append(0x0A)
         let url = URL(fileURLWithPath: dragLogPath)
+        // `FileHandle(forWritingTo:)` refuses to create the file, and the
+        // very first drag -- the one a fresh install is most likely to be
+        // asked about -- found nothing to write to. Create it once here so
+        // the log can bootstrap itself.
+        if !FileManager.default.fileExists(atPath: dragLogPath) {
+            FileManager.default.createFile(atPath: dragLogPath, contents: nil)
+        }
         // Keep the log small: it is a note of the last few drags, not a
         // history of every drag ever.
         if let attributes = try? FileManager.default.attributesOfItem(atPath: dragLogPath),
@@ -946,8 +963,15 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
     /// on the screen is exactly what a person feels as "the pet does not
     /// follow the cursor".
     private func runDragBenchmark() {
-        let origin = panel.frame.origin
         let start = NSPoint(x: 400, y: 400)
+        // The "events" profile posts drag events at the synthetic cursor,
+        // so the panel has to sit under it -- otherwise every event falls
+        // outside the window and the WebView never does the work a real
+        // drag makes it do.
+        if benchProfile.contains("events") {
+            panel.setFrameOrigin(NSPoint(x: start.x - size / 2, y: start.y - size / 2))
+        }
+        let origin = panel.frame.origin
         cursorOverride = start
         buttonOverride = true
         drag.begin(at: start, origin: origin)
@@ -990,6 +1014,20 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
             self.reportDragBenchmark()
         }
         if let path { RunLoop.main.add(path, forMode: .common) }
+        // The "events" profile turns the drag into a real one: it posts a
+        // stream of mouse-dragged events into the app, at the rate a real
+        // trackpad delivers them, so the WebView does the per-event work a
+        // real drag makes it do -- on the same main thread as the follow
+        // timer.
+        if benchProfile.contains("events") {
+            var events: Timer?
+            events = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self] _ in
+                guard let self, self.drag.isDragging else { return }
+                self.postTestDragged(at: self.cursorOverride ?? .zero)
+                if !self.drag.isDragging { events?.invalidate() }
+            }
+            if let events { RunLoop.main.add(events, forMode: .common) }
+        }
         // A heartbeat on the main run loop: if the thread is blocked, this
         // timer cannot fire either, and the gap between two beats is the
         // length of the block.
@@ -1017,6 +1055,29 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
         let local = panel.convertPoint(fromScreen: point)
         guard let event = NSEvent.mouseEvent(
             with: .leftMouseDown,
+            location: local,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: Int(panel.windowNumber),
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        ) else { return }
+        NSApp.postEvent(event, atStart: false)
+    }
+
+    /// Post a drag event at the cursor.
+    ///
+    /// A real drag does not just move the cursor: it streams mouse-dragged
+    /// events into the app, and the WebView does real work for every one of
+    /// them -- hit-testing, pointer capture, drag bookkeeping. The benchmark
+    /// needs that stream to measure what a real drag does to the follow
+    /// timer, because the stream runs on the very same main thread.
+    private func postTestDragged(at point: NSPoint) {
+        let local = panel.convertPoint(fromScreen: point)
+        guard let event = NSEvent.mouseEvent(
+            with: .leftMouseDragged,
             location: local,
             modifierFlags: [],
             timestamp: ProcessInfo.processInfo.systemUptime,
