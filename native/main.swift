@@ -256,16 +256,17 @@ final class SpritePlayer {
         play(manifest.idle, loop: true)
     }
 
-    /// Lay the layers out in a container of the given size.
-    func layout(in bounds: CGRect, scale: CGFloat) {
+    /// Lay the pet out as a square of `edge`, centred in a container.
+    func layout(in container: CGRect, edge: CGFloat, scale: CGFloat) {
+        let pet = CGRect(x: container.midX - edge / 2, y: container.midY - edge / 2, width: edge, height: edge)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        petLayer.frame = bounds
+        petLayer.frame = pet
         petLayer.contentsScale = scale
         // The ground shadow sits just under the feet, which land around 70%
         // down the cell.
-        groundShadow.bounds = CGRect(x: 0, y: 0, width: bounds.width * 0.52, height: bounds.height * 0.06)
-        groundShadow.position = CGPoint(x: bounds.midX, y: bounds.minY + bounds.height * 0.23)
+        groundShadow.bounds = CGRect(x: 0, y: 0, width: pet.width * 0.52, height: pet.height * 0.06)
+        groundShadow.position = CGPoint(x: pet.midX, y: pet.minY + pet.height * 0.23)
         CATransaction.commit()
     }
 
@@ -743,7 +744,8 @@ final class PetController: NSObject, NSApplicationDelegate {
             host.addSublayer(player.groundShadow)
             host.addSublayer(player.petLayer)
         }
-        player.layout(in: view.bounds, scale: panel.backingScaleFactor)
+        shownEdge = size
+        player.layout(in: view.bounds, edge: size, scale: panel.backingScaleFactor)
         panel.contentView = view
         panel.orderFrontRegardless()
         NotificationCenter.default.addObserver(
@@ -788,9 +790,10 @@ final class PetController: NSObject, NSApplicationDelegate {
         let mouse = NSEvent.mouseLocation
         let frame = panel.frame
         // Measured from the pet's eyes, a little above the middle, in a
-        // top-left space.
-        let dx = (mouse.x - frame.minX) - size / 2
-        let dy = (frame.height - (mouse.y - frame.minY)) - size * 0.42
+        // top-left space. While the pet is being resized the window is
+        // bigger than the pet, which sits in its middle.
+        let dx = (mouse.x - frame.minX) - frame.width / 2
+        let dy = (frame.height - (mouse.y - frame.minY)) - ((frame.height - size) / 2 + size * 0.42)
         guard hypot(dx, dy) <= size * 1.4 else {
             player.lookOut()
             return
@@ -1049,22 +1052,91 @@ final class PetController: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Change the panel's edge, keeping the pet's centre where it is.
+    private static let maxEdge: CGFloat = 260
+    private static let minEdge: CGFloat = 120
+    /// How long the slider has to rest before the window is fitted to the pet.
+    private static let settleDelay: TimeInterval = 0.25
+    private var settleTimer: Timer?
+    /// The size the pet is drawn at this frame, on its way to `size`.
+    private var shownEdge: CGFloat = 0
+    private var glideTimer: Timer?
+    private var glideClock: CFTimeInterval = 0
+    /// Time constant of the glide, in seconds.
+    private static let glideTau: Double = 0.05
+
+    /**
+     * Change the pet's size, keeping its centre where it is.
+     *
+     * Resizing the window itself is what flashed: every `setFrame` makes the
+     * window server rebuild the backing store of a transparent window, the
+     * pet's layer only learns the new size afterwards, and the sizes arrive
+     * in steps of 10px with nothing in between. So while the size is in
+     * motion the window is opened up to its largest once and stays there,
+     * and the pet is only a layer inside it, eased towards each new size
+     * frame by frame. When the slider rests, the window is fitted to the pet
+     * in a single step that changes nothing on screen.
+     */
     private func resize(to requested: CGFloat) {
-        let edge = min(260, max(120, requested.rounded()))
-        guard edge != size else { return }
-        let old = panel.frame
-        var origin = NSPoint(x: old.midX - edge / 2, y: old.midY - edge / 2)
-        // A pet that grows past the edge of its screen is pulled back in.
-        if let visible = (panel.screen ?? NSScreen.main)?.visibleFrame {
-            origin.x = min(max(origin.x, visible.minX), max(visible.minX, visible.maxX - edge))
-            origin.y = min(max(origin.y, visible.minY), max(visible.minY, visible.maxY - edge))
+        let edge = min(Self.maxEdge, max(Self.minEdge, requested.rounded()))
+        guard edge != size, let view = panel.contentView else { return }
+
+        if panel.frame.width < Self.maxEdge {
+            // The pet keeps its current size and place; only the room around
+            // it grows. The window may reach past the screen's edge for a
+            // moment -- the fit below pulls it back.
+            let old = panel.frame
+            let wide = NSRect(x: old.midX - Self.maxEdge / 2, y: old.midY - Self.maxEdge / 2,
+                              width: Self.maxEdge, height: Self.maxEdge)
+            shownEdge = size
+            panel.setFrame(wide, display: false)
+            player.layout(in: view.bounds, edge: shownEdge, scale: panel.backingScaleFactor)
         }
+
         size = edge
-        panel.setFrame(NSRect(x: origin.x, y: origin.y, width: edge, height: edge), display: true)
-        if let view = panel.contentView {
-            player.layout(in: view.bounds, scale: panel.backingScaleFactor)
+        settleTimer?.invalidate()
+        settleTimer = nil
+        guard glideTimer == nil else { return }
+        glideClock = CACurrentMediaTime()
+        let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] _ in self?.glideStep() }
+        RunLoop.main.add(timer, forMode: .common)
+        glideTimer = timer
+    }
+
+    /// One frame of the glide: close part of the gap to the wanted size.
+    private func glideStep() {
+        guard let view = panel.contentView else { return }
+        let now = CACurrentMediaTime()
+        let delta = min(0.05, now - glideClock)
+        glideClock = now
+        // Exponential easing: quick to react, no overshoot, and a target
+        // that moves mid-glide just changes where it is heading.
+        let gap = size - shownEdge
+        shownEdge = abs(gap) < 0.25 ? size : shownEdge + gap * (1 - CGFloat(exp(-delta / Self.glideTau)))
+        player.layout(in: view.bounds, edge: shownEdge, scale: panel.backingScaleFactor)
+        guard shownEdge == size else { return }
+        glideTimer?.invalidate()
+        glideTimer = nil
+        settleTimer = Timer.scheduledTimer(withTimeInterval: Self.settleDelay, repeats: false) { [weak self] _ in
+            self?.fitWindowToPet()
         }
+    }
+
+    /// Shrink the window around the pet once the size has stopped changing.
+    private func fitWindowToPet() {
+        settleTimer = nil
+        guard let view = panel.contentView, panel.frame.width != size else { return }
+        let old = panel.frame
+        var origin = NSPoint(x: old.midX - size / 2, y: old.midY - size / 2)
+        // A pet that grew past the edge of its screen is pulled back in.
+        if let visible = (panel.screen ?? NSScreen.main)?.visibleFrame {
+            origin.x = min(max(origin.x, visible.minX), max(visible.minX, visible.maxX - size))
+            origin.y = min(max(origin.y, visible.minY), max(visible.minY, visible.maxY - size))
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        panel.setFrame(NSRect(x: origin.x, y: origin.y, width: size, height: size), display: false)
+        player.layout(in: view.bounds, edge: size, scale: panel.backingScaleFactor)
+        CATransaction.commit()
         saveOrigin()
     }
 
