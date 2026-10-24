@@ -86,6 +86,9 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
     private var diagnoseAfter: Double = 0
     private var startMouse = NSPoint.zero
     private var startOrigin = NSPoint.zero
+    /// The window origin as the last watch tick saw it, so a real drag can
+    /// count the window server's moves instead of its own.
+    private var lastSeenOrigin = NSPoint.zero
     private var drag = DragState()
     /// Where the cursor is, as far as the drag is concerned.
     ///
@@ -164,6 +167,7 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
     private var performNow = false
     private var performanceTimer: Timer?
     private var trackingArea: NSTrackingArea?
+    private var coverView: PetCoverView?
     private var pointerInsidePanel = false
     private var lookOutCount = 0
 
@@ -416,7 +420,12 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
-        panel.isMovableByWindowBackground = false
+        // The drag belongs to the window server, not to this process: a
+        // server-side move session follows the cursor even when the app's
+        // own main thread has been stalled -- the way dragging any window
+        // stays smooth while the app is beachballed. Every press lands on
+        // the cover view below, which hands the drag to AppKit.
+        panel.isMovableByWindowBackground = true
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.worksWhenModal = true
@@ -468,6 +477,18 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
         panel.contentView = webView
         panel.orderFrontRegardless()
 
+        // The cover takes every click before the WebView can see it and
+        // tells AppKit the press may move the window, which starts the
+        // window server's move session -- the drag never touches this
+        // process's main thread again. The page has needed no real event
+        // since the gaze and the reaction went native.
+        let cover = PetCoverView(frame: webView.bounds)
+        cover.autoresizingMask = [.width, .height]
+        // The old press benchmark needs the page to hear presses again.
+        if benchProfile.contains("oldpress") { cover.eatsEvents = false }
+        webView.addSubview(cover)
+        coverView = cover
+
         // The pet looks at the cursor while it is over the panel, and the
         // gaze rows are static frames -- so the pet stops animating until it
         // is told the cursor is gone. A WebView only gets pointer events
@@ -503,6 +524,13 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
     /// the WebView -- and so its release and its drag events must be kept
     /// from it too.
     private var swallowingMouse = false
+    /// Whether this helper moves the window itself, following the cursor
+    /// on a timer. Only the benchmark needs that, for a drag no real hand
+    /// is performing: a real drag is carried by the window server, and
+    /// the helper only watches -- which is the whole point, because a
+    /// server-side move cannot be stalled by anything this process's main
+    /// thread is busy with.
+    private var syntheticMover = false
 
     /// React to the mouse before the page gets the chance to.
     ///
@@ -532,6 +560,8 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
             // the page reported the press, to see what that costs.
             guard !benchProfile.contains("oldpress") else { return event }
             drag.begin(at: point, origin: panel.frame.origin)
+            startOrigin = panel.frame.origin
+            lastSeenOrigin = startOrigin
             startFollowTimer()
             // Nothing below may talk to the web view: the press is exactly
             // when the web process is most likely asleep, and the first
@@ -547,20 +577,26 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
             // page's message used to.
             performanceTimer?.invalidate()
             schedulePerformance(after: 20)
-            swallowingMouse = true
-            return nil
+            // A real drag needs the press passed on: the cover view hands
+            // it to the window server, which moves the window from now
+            // on. Only the benchmark's handless drag is kept from AppKit
+            // and moved by the timer instead.
+            swallowingMouse = syntheticMover
+            return syntheticMover ? nil : event
         case .leftMouseUp:
             let swallow = swallowingMouse
             swallowingMouse = false
             finishDrag()
             return swallow ? nil : event
         case .leftMouseDragged:
-            // Catch up inside the event itself, the way native window
-            // dragging does: the follow timer polls at the refresh rate,
-            // and a busy main run loop can hold a tick back until the pet
-            // visibly trails the cursor.
-            followCursor()
-            return swallowingMouse ? nil : event
+            // In the benchmark's handless drag the helper still moves the
+            // window; a real drag is the window server's, and AppKit keeps
+            // those events to itself anyway.
+            if syntheticMover {
+                followCursor()
+                return swallowingMouse ? nil : event
+            }
+            return event
         default:
             return event
         }
@@ -875,6 +911,25 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
         let current = cursor
         drag.noteMoved(mouse: current)
         let target = drag.windowOrigin(for: current)
+        if !syntheticMover {
+            // Watch mode: the window server is carrying the drag, and
+            // nothing here can help or hinder it. All that is left is to
+            // write down how far behind the cursor the window is.
+            let origin = panel.frame.origin
+            let trail = hypot(target.x - origin.x, target.y - origin.y)
+            maxTrail = max(maxTrail, trail)
+            if origin != startOrigin {
+                if firstMoveTime == 0 {
+                    firstMoveTime = CFAbsoluteTimeGetCurrent()
+                }
+                if origin != lastSeenOrigin {
+                    lastSeenOrigin = origin
+                    windowMoves += 1
+                    moveStamps.append(CFAbsoluteTimeGetCurrent())
+                }
+            }
+            return
+        }
         if target == panel.frame.origin { return }
         moveAttempts += 1
         // How far the pet is behind the cursor right now. This is the
@@ -954,7 +1009,10 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
         for index in 1..<max(1, moveStamps.count) {
             worstGap = max(worstGap, (moveStamps[index] - moveStamps[index - 1]) * 1000)
         }
-        let last = firstMoveTime == 0 ? 0 : (CFAbsoluteTimeGetCurrent() - firstMoveTime) * 1000
+        // The whole press-to-release span, which is the one length both drag
+        // modes can measure: a native, window-server drag runs inside
+        // AppKit's own session and this process never sees its events.
+        let last = max(0, (CFAbsoluteTimeGetCurrent() - pressTime) * 1000)
         let object: [String: Any] = [
             "at": Date().timeIntervalSince1970,
             "moves": windowMoves,
@@ -1024,6 +1082,7 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
     /// on the screen is exactly what a person feels as "the pet does not
     /// follow the cursor".
     private func runDragBenchmark() {
+        syntheticMover = true
         let start = NSPoint(x: 400, y: 400)
         // The "events" profile posts drag events at the synthetic cursor,
         // so the panel has to sit under it -- otherwise every event falls
@@ -1310,6 +1369,23 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
 
 signal(SIGTERM) { _ in exit(0) }
 signal(SIGINT) { _ in exit(0) }
+
+/// The invisible view that turns a press on the pet into a native window
+/// drag.
+///
+/// `hitTest` claims every point, so the WebView never hears about a press
+/// at all, and `mouseDownCanMoveWindow` is what makes AppKit hand the drag
+/// to the window server. The page's own pointer events have been unused
+/// since the gaze, the click reaction and the follow all went native.
+final class PetCoverView: NSView {
+    /// The old press benchmark needs the page to hear the press again, so
+    /// the cover can be told to stand aside.
+    var eatsEvents = true
+    override func hitTest(_ point: NSPoint) -> NSView? { eatsEvents ? self : nil }
+    override var mouseDownCanMoveWindow: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override var acceptsFirstResponder: Bool { false }
+}
 
 let application = NSApplication.shared
 let controller = PetController()
