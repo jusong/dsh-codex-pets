@@ -16,7 +16,7 @@ import WebKit
  *   /tmp/render-pet --pet-dir pets/hoots --runtime runtime \
  *     --out /tmp/pet.png --animation jumping --after 1200
  */
-final class Renderer: NSObject, NSApplicationDelegate, WKNavigationDelegate {
+final class Renderer: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScriptMessageHandler {
     private var webView: WKWebView!
     private var window: NSWindow!
     private var outputPath = ""
@@ -25,6 +25,10 @@ final class Renderer: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     private var performNow = false
     private var script = ""
     private var evaluate = ""
+    /// How many messages the page sent across the bridge, by type.
+    private var messageCounts: [String: Int] = [:]
+    /// Print the message counts when the render is done.
+    private var showMessages = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -46,6 +50,7 @@ final class Renderer: NSObject, NSApplicationDelegate, WKNavigationDelegate {
             case "--perform": performNow = true; index += 1
             case "--script": script = arguments[index + 1] ?? ""; index += 2
             case "--eval": evaluate = arguments[index + 1] ?? ""; index += 2
+            case "--messages": showMessages = true; index += 1
             default: index += 1
             }
         }
@@ -71,6 +76,9 @@ final class Renderer: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         manifestJSON = manifestJSON.replacingOccurrences(of: "<", with: "\\u003c")
 
         let configuration = WKWebViewConfiguration()
+        // Count what the page sends across the bridge, so a test can see how
+        // often the page talks to the native helper.
+        configuration.userContentController.add(self, name: "pet")
         // The page is loaded from a string, so the WebView treats it as an
         // opaque origin and refuses to pull in file:// subresources (the
         // sprite atlas). Grant the page read access to the filesystem.
@@ -203,6 +211,13 @@ final class Renderer: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         FileHandle.standardError.write("navigated: \(webView.url?.absoluteString ?? "?")\n".data(using: .utf8)!)
     }
 
+    /// Count what the page sends across the bridge.
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        let type = (message.body as? [String: Any])?["type"] as? String ?? "unknown"
+        messageCounts[type, default: 0] += 1
+    }
+
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         FileHandle.standardError.write("navigation failed: \(error)\n".data(using: .utf8)!)
     }
@@ -221,6 +236,13 @@ final class Renderer: NSObject, NSApplicationDelegate, WKNavigationDelegate {
                     FileHandle.standardError.write("eval error: \(error)\n".data(using: .utf8)!)
                 }
             }
+        }
+        if showMessages {
+            let counts = messageCounts
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key)=\($0.value)" }
+                .joined(separator: " ")
+            FileHandle.standardError.write("messages: \(counts)\n".data(using: .utf8)!)
         }
         let expression = """
         (function () {

@@ -131,6 +131,10 @@
       this.pointer = null
       this.dragging = false
       this.dragOrigin = null
+      // The gaze the pointer asked for, and whether a frame has been asked
+      // for yet to apply it.
+      this.pendingLook = null
+      this.lookScheduled = false
       this.raf = 0
       this.lastTime = 0
 
@@ -428,7 +432,24 @@
         // pet's answer is not hidden behind a static frame.
       })
       target.addEventListener('pointermove', (event) => {
-        this.updateLook(event.clientX, event.clientY)
+        // The gaze is applied once per frame, not once per event.
+        //
+        // A trackpad produces pointer events far faster than the screen
+        // refreshes, and every one of them used to cost a forced layout
+        // (getBoundingClientRect) and a redraw of the canvas -- work the
+        // screen cannot show anyway. Folding the events into one per
+        // frame keeps the gaze just as responsive and does a fraction of
+        // the drawing.
+        this.pendingLook = { x: event.clientX, y: event.clientY }
+        if (!this.lookScheduled) {
+          this.lookScheduled = true
+          requestAnimationFrame(() => {
+            this.lookScheduled = false
+            const at = this.pendingLook
+            this.pendingLook = null
+            if (at) this.updateLook(at.x, at.y)
+          })
+        }
         if (this.dragging) this.updateDrag(event.clientX)
       })
       const end = () => {
@@ -462,6 +483,9 @@
      * when the cursor is gone; this is the page-side half of that.
      */
     lookOut() {
+      // A gaze that was asked for but not applied yet must not come back
+      // after the cursor has already left.
+      this.pendingLook = null
       if (!this.lookFrame) return
       this.lookFrame = null
       this.draw()
@@ -507,8 +531,13 @@
       const columns = this.grid.columns || 8
       const row = rows[Math.floor(index / columns)] ?? rows[0]
       const column = index % columns
+      const previous = this.lookFrame
       this.lookFrame = { row, column }
-      this.draw()
+      // The gaze rows are static frames, so the canvas only has to be
+      // redrawn when the direction actually changed.
+      if (!previous || previous.row !== row || previous.column !== column) {
+        this.draw()
+      }
     }
 
     // -- drawing ---------------------------------------------------------

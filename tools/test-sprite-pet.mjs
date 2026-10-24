@@ -329,4 +329,94 @@ const broken = new SpritePet({ ...manifest, animations: { ...manifest.animations
 broken.play('does-not-exist')
 assert.equal(broken.animation?.name, 'idle', 'an unknown animation falls back to idle')
 
+// ---- the gaze is applied once per frame ----------------------------------
+//
+// A trackpad produces pointer events far faster than the screen refreshes.
+// Every one of them used to cost a forced layout and a redraw of the
+// canvas, so they are folded into one per frame. Dragging the pet is
+// where this matters most: the cursor sits on the pet, the direction
+// barely changes, and the old code redrew the canvas for every event.
+
+const listeners = new Map()
+globalThis.document.addEventListener = (type, handler) => {
+  if (!listeners.has(type)) listeners.set(type, [])
+  listeners.get(type).push(handler)
+}
+let frames = []
+globalThis.requestAnimationFrame = (callback) => {
+  frames.push(callback)
+  return frames.length
+}
+function fire(type, event) {
+  for (const handler of listeners.get(type) || []) handler(event)
+}
+function runFrame() {
+  const queued = frames
+  frames = []
+  for (const callback of queued) callback(0)
+}
+
+const tracker = new SpritePet(manifest, { canvas })
+tracker.image = { width: 1536, height: 2288 }
+tracker.play('idle', { loop: true })
+tracker.attachPointer(document)
+
+let trackerDraws = 0
+tracker.draw = () => { trackerDraws += 1 }
+
+for (let index = 0; index < 50; index += 1) {
+  fire('pointermove', { clientX: centreX + 40, clientY: centreY - 30 })
+}
+assert.equal(trackerDraws, 0, 'a pointer event does not draw on its own')
+assert.equal(tracker.lookFrame, null, 'the gaze waits for the frame')
+
+runFrame()
+assert.ok(tracker.lookFrame, 'the frame applies the gaze')
+assert.equal(trackerDraws, 1, 'fifty pointer events cost one redraw')
+
+// The direction has not changed, so the next batch costs nothing.
+for (let index = 0; index < 50; index += 1) {
+  fire('pointermove', { clientX: centreX + 40, clientY: centreY - 30 })
+}
+runFrame()
+assert.equal(trackerDraws, 1, 'a gaze that did not change does not redraw')
+
+// A gaze that was asked for but not applied yet must not come back after
+// the cursor has left.
+fire('pointermove', { clientX: centreX - 200, clientY: centreY + 200 })
+tracker.lookOut()
+runFrame()
+assert.equal(tracker.lookFrame, null, 'a pending gaze is dropped when the cursor leaves')
+
+// ---- the drag sends one message per frame --------------------------------
+//
+// The native helper moves the window once per frame, so the page only has
+// to say "the cursor moved" -- once per frame is enough, and every message
+// is work on the other side.
+
+const runtime = readFileSync(join(here, '..', 'runtime', 'pet-runtime.js'), 'utf8')
+const sent = []
+globalThis.document.documentElement = { style: {}, setPointerCapture() {} }
+globalThis.window.webkit = {
+  messageHandlers: {
+    pet: { postMessage: (body) => sent.push(body.type) },
+  },
+}
+// eslint-disable-next-line no-new-func
+new Function(runtime)()
+
+fire('pointerdown', { button: 0, pointerId: 1, preventDefault() {} })
+assert.deepEqual(sent, ['down'], 'a press is reported once')
+
+for (let index = 0; index < 50; index += 1) {
+  fire('pointermove', { clientX: centreX + index, clientY: centreY, preventDefault() {} })
+}
+assert.deepEqual(sent, ['down'], 'a move waits for the frame')
+
+runFrame()
+assert.deepEqual(sent, ['down', 'move'], 'fifty pointer events send one move')
+
+fire('pointerup', { preventDefault() {} })
+assert.deepEqual(sent, ['down', 'move', 'up'], 'the release is reported')
+
 console.log('sprite-pet engine: all checks passed')

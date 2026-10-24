@@ -115,7 +115,7 @@ pets/<id>/
 - `NSPanel` + `.floating` + `.canJoinAllSpaces` + `.fullScreenAuxiliary`：浮在普通窗口之上，跟随所有桌面。
 - 默认出现在屏幕右下、输入框上方，避免挡住发送按钮；拖到任意位置后会记住。
 - 点击宠物：`NSRunningApplication` 激活 `com.deepseek.dsh`；如果 DSH 没在运行，则打开 `/Applications/DeepSeek Harness.app`。
-- 拖动宠物：窗口跟着鼠标移动，位置保存在 `~/.dsh/dsh-pet-state.json`。
+- 拖动宠物：窗口跟着鼠标移动，位置保存在 `~/.dsh/dsh-pet-state.json`。**拖动是每帧最多移动一次窗口**，所以宠物跟手但不拖影——细节见下面「拖动跟手」那一节。
 - 原地表演：每隔 18–30 秒播一次 manifest 里定义的动作序列，结束时溅一圈庆祝粒子。
   - 鼠标停在宠物上时会跳过本轮，避免在光标下突然动起来。
   - 拖动会打断正在进行的表演；窗口位置只在拖动时改变，不会再自己横穿屏幕。
@@ -124,6 +124,56 @@ pets/<id>/
 - 被点一下：宠物会**跳一下**来回你（manifest 里的 `react.click`）。反应时注视会让位，所以你看得到的是跳跃而不是一张静止的脸；跳完回到闲时状态。点击仍然会把 DSH 唤到前台（这是宠物存在的意义）。
 - 助手每 1 秒检查 DSH 宿主 PID；宿主退出后自动退出。`flock` 保证同一时间只有一只宠物。
 - 纯本机资源，没有网络请求，不读凭据。
+
+---
+
+## 拖动跟手：别让窗口追不上光标
+
+拖动宠物曾经很卡，光标和宠物之间有明显延迟。原因不是「代码写得慢」，而是**每一层都在按自己的节奏拼命干活，而它们的工作量加起来超过了机器能给的**。
+
+一次拖动的原始流水线是这样的：
+
+```
+触控板 → 浏览器 pointermove（每秒 150~240 次）
+       → 页面重算注视 + 重绘画布（每个事件一次）
+       → postMessage 过桥（每个事件一条）
+       → 原生 setFrameOrigin（每条消息一次）
+       → 窗口服务器重新合成整个 WebView 层
+```
+
+最后两步是致命的：**每移动一次窗口，窗口服务器都要把 880×880 的 WebView 层重新合成一遍**。每秒来 240 次，它根本做不完，于是消息在主线程上排队，窗口越拖越落后——而且越拖越落后，因为队列只会变长。
+
+### 三处改动
+
+1. **注视按帧合并**（`runtime/sprite-pet.js`）：pointermove 只记住最新的位置，真正的注视计算交给下一个 `requestAnimationFrame`。**方向没变就不重绘**——拖动时光标就压在宠物身上，方向几乎不变，而旧代码每个事件都重画一次整块画布。
+2. **拖动消息按帧合并**（`runtime/pet-runtime.js`）：`move` 消息也从「每个事件一条」变成「每帧一条」。原生侧读的是**真实的 `NSEvent.mouseLocation`**，所以它只需要知道「还在拖」，不需要知道光标在哪——一帧一条足够跟手。
+3. **窗口每帧最多移动一次**（`native/main.swift`）：`move` 消息现在只置一个标志，真正的 `setFrameOrigin` 由一个按**屏幕刷新率**跑的定时器来做。关键是「标志」而不是「队列」：某一帧来不及，下一帧直接跳过，**积压不会发生**。
+
+### 量出来的效果
+
+同一段 240 个 pointermove 的拖动（真实 WKWebView + 真实原生助手）：
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| 画布重绘次数 | 173 | **17** |
+| 发往原生的 `move` 消息 | 163 | **77** |
+| 原生窗口移动次数（480 次请求） | 480 | **303**（受帧率封顶） |
+| 拖动结束时落后光标 | — | **0px** |
+
+### 怎么复现这两个数
+
+```sh
+# 原生侧：480 次拖动请求，看窗口真的动了多少次
+bin/dsh-pet-macos --pet-dir pets/hoots --runtime runtime/pet-runtime.js \
+  --size 200 --lock /tmp/dsh-pet-bench.lock --drag-bench
+# -> drag bench: requests=480 windowMoves=303 moveCostMs=264 maxLagPx=4 finalLagPx=0px
+
+# 页面侧：在真实 WKWebView 里灌 240 个 pointermove，数画布重绘和过桥的消息
+/tmp/render-pet --pet-dir pets/hoots --runtime runtime --out /tmp/drag.png \
+  --after 2400 --messages --script "<灌事件的脚本>" --eval "String(window.__draws)"
+```
+
+`--drag-bench` 用的是一个**它自己控制的光标**（240 次请求、每秒 240 次，比任何屏幕都快），所以它量的是「窗口对拖动请求的响应」，而不是「人拖得多快」——后者没法自动测：光标属于正在用这台机器的人，合成鼠标事件在这台机器上也不可靠（会被系统丢掉）。
 
 ---
 
@@ -493,12 +543,21 @@ swiftc -O -swift-version 5 -framework AppKit -framework WebKit \
   --script "document.dispatchEvent(new PointerEvent('pointermove', {clientX: 40, clientY: 5}))" \
   --eval "JSON.stringify({look: window.__pet.lookFrame})"
 
+# 数一数页面往原生助手发了多少条消息（--messages 会打印 messages: down=1 move=77）
+/tmp/render-pet --pet-dir pets/bsod --runtime runtime --out /tmp/pet.png --after 1800 \
+  --messages --script "<灌 pointermove 事件的脚本>"
+
 # 让真机助手把自己的状态倒出来：引擎版本、idle 循环有没有触发、画布尺寸对不对
 # 诊断模式还会跑两遍演练：
 #   注视演练——把面板挪到光标下 → 让页面看向光标 → 再挪开，走一遍「指针离开」
 #   点击演练——在页面里派发一次 pointerdown，看宠物是不是跳起来了
 bin/dsh-pet-macos --pet-dir pets/bsod --runtime runtime/pet-runtime.js \
   --size 140 --lock /tmp/dsh-pet-diag.lock --diagnose 12000
+
+# 拖动基准：用助手自己控制的光标灌 480 次拖动请求，看窗口真的动了多少次、
+# 拖完落后光标多少像素
+bin/dsh-pet-macos --pet-dir pets/hoots --runtime runtime/pet-runtime.js \
+  --size 200 --lock /tmp/dsh-pet-bench.lock --drag-bench
 
 # 从 Codex 桌面版重新抽一遍全部素材（会覆盖 pets/ 下的图集和 manifest）
 python3 tools/port_codex_pets.py
@@ -627,6 +686,14 @@ seedy 的头是个会转的立方体，正面时框宽约 103px，转过去明�
 
 **自定义宠物的帧数不必跟官方一致，硬套官方的时长表就会丢帧。**
 官方的时长表同时也是「这一行有几帧」的声明（idle 6 帧、running 8 帧、waving 4 帧）。自定义宠物不守这个规矩——`deepseek` 的 idle 行就是 **7 帧**。移植时要**按 alpha 通道数帧**（找这一行最后一个还有内容的格子），再把时长撑到这么长，同时保住「每帧一个固定步长、最后一帧多停一会儿」的规律。
+
+**拖动卡顿的根因是「每个事件都让窗口动一次」，不是代码慢。**
+指针事件每秒来 150~240 次，每一次都让 `setFrameOrigin` 搬一次窗口，而**搬一次窗口就要让窗口服务器把整个 WebView 层重新合成一遍**——机器做不完，消息就在主线程上排队，窗口越拖越落后。修法是三层都**按帧合并**：注视一帧算一次（方向没变就不重绘）、`move` 消息一帧发一条、窗口一帧最多搬一次。
+
+关键在于**用标志而不是队列**：某一帧来不及就跳过，积压不会发生；用队列的话，拖得越久落后越多。
+
+**`updateLook` 不能改成异步。**
+引擎单测是直接调 `updateLook()` 然后立刻断言 `lookFrame` 的，所以它必须保持同步——要合并的是**事件层**（pointermove 只记位置、交给 rAF），不是 `updateLook` 本身。同理，「光标离开」时必须把还没应用的那一帧注视丢掉，否则光标已经走了还会突然转头。
 
 ---
 

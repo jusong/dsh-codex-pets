@@ -10,6 +10,8 @@
 (() => {
   let pet = null
   let dragging = false
+  // Whether a "move" is waiting to be sent.
+  let moveScheduled = false
 
   function send(type) {
     try {
@@ -83,7 +85,21 @@
 
   document.addEventListener('pointermove', (event) => {
     if (!dragging) return
-    send('move')
+    // One message per frame is enough.
+    //
+    // The cursor produces pointer events far faster than the screen
+    // refreshes, and every one of them used to become a message across
+    // the bridge -- and, on the other side, a window move. The native
+    // helper reads the real cursor position itself, so it only needs to
+    // know that the pet is still being dragged: one message per frame
+    // tells it exactly as much, and the pet still follows the cursor.
+    if (!moveScheduled) {
+      moveScheduled = true
+      requestAnimationFrame(() => {
+        moveScheduled = false
+        send('move')
+      })
+    }
     event.preventDefault()
   })
 
