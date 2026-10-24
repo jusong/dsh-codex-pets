@@ -109,9 +109,49 @@ pets/<id>/
 
 ---
 
+## 在设置页里装、删宠物
+
+设置页的「可选宠物」下面有两样东西，**不用开终端**：
+
+**安装宠物** —— 在 [codex-pets.net](https://codex-pets.net) 挑一只，复制它的 **ID**（如 `deepseek`）或**页面链接**（`https://codex-pets.net/#/pets/deepseek`），粘到输入框，回车或点「安装」：
+
+- 装完自动切换到这只宠物；
+- 同一只宠物（图集逐字节相同）已经装过，就只切换过去，不会装第二份；
+- 目录名被**另一只**宠物占了，新宠物改叫 `<id>-2`、`-3`……，**不会覆盖**已有的；
+- 只认站点的 ID 和页面链接；别的网址、`/download` 直链、文件路径一律拒绝（要装 zip 或本地文件夹，用下面的命令行）。
+
+**从 Codex 导入** —— 面板会看本机 `~/.codex/pets`（或 `$CODEX_HOME/pets`），告诉你有几只还没导入，点「一键导入」全部装进来：
+
+- 目录名就是宠物 id（`Mixed Case` → `mixed-case`）；
+- 图集和已装的某只相同 → 跳过；目录名被另一只占了 → 跳过；**从不替换任何东西**；
+- 某一只坏了（`pet.json` 解析不了、图集尺寸不对）只会算「失败」，不影响其余的；
+- 只读 Codex 目录，不动里面的文件。
+
+**删除宠物** —— 鼠标移到卡片上，右上角出现 `×`，点一下卡片就地变成「确定删除「xxx」吗？」，确认才真的删（**直接删掉 `pets/<id>/`，不进回收站**，默认焦点在「取消」上，`Esc` 也是取消）：
+
+- **正在用的宠物不能删**（按钮置灰并说明原因），先选别的；
+- 至少要留一只；
+- 宿主只删「`pets/` 下带 `pet.json` 的真目录」：id 不是 `[a-z0-9-]+`、目录里没有 `pet.json` 都拒绝；符号链接只解除链接，不会顺着删到目标；
+- 随插件发布的内置宠物也能删——想要回来就 `git checkout pets/<id>`。
+
+三个动作在宿主里**一次只做一个**（两个窗口同时点也不会装出半只宠物），装的时候先写到 `pets/.<id>-xxxx/` 再整体改名，失败不留残骸。
+
+宿主多了四条路由，都只在宿主进程里读写 `pets/`：
+
+| 路由 | 作用 |
+|---|---|
+| `POST /api/dsh-pet/install` `{source}` | 按 ID / 页面链接装；返回 `{ok, already, pet}` |
+| `POST /api/dsh-pet/remove` `{id}` | 删除；失败返回 `{error:{code,message}}`（`active` / `last` / `invalid-id` / `not-installed`） |
+| `GET /api/dsh-pet/codex-pets` | 本机 Codex 里每只宠物的状态：`ready` / `installed` / `taken` / `failed` |
+| `POST /api/dsh-pet/import-codex` | 一键导入，返回 `{installed, skipped, failed}` |
+
+注册表地址默认 `https://codex-pets.net`，用环境变量 `DSH_PET_REGISTRY` 可以换。命令行和设置页共用 `lib/pet-store.js`，行为一致。
+
+---
+
 ## 安装 Codex 宠物
 
-[codex-pets.net](https://codex-pets.net) 上有很多社区做的 Codex 宠物，本项目**直接兼容**，一条命令装进 `pets/`：
+[codex-pets.net](https://codex-pets.net) 上有很多社区做的 Codex 宠物，本项目**直接兼容**。设置页里就能装（见上一节）；命令行还能装 zip 和本地文件夹：
 
 ```bash
 node tools/install-pet.mjs deepseek                                   # 站点上的宠物 id
@@ -299,7 +339,7 @@ DSH Desktop 0.2.1 的 profile 由应用自己管理。如果装完没有立即�
 - 上方是选中宠物的**实时动画预览**（直接读它的精灵图集，按 manifest 的帧时长播放）；
 - 下面是**尺寸滑块**（120–260 px），预览会跟着一起缩放；
 - **没有保存按钮**：`pet` / `size` 一改就写进 profile patch，宿主随即重启助手，桌面上的宠物当场换掉；
-- 「恢复默认」撤销这次覆盖（清掉 patch 里的配置项，回到插件自带默认值）。
+- 画廊每张卡片带删除按钮，下面是安装/导入面板（见上一节）。
 
 > 尺寸滑块不会在拖动的每一帧都写宿主——那样每拖一下就要重启一次助手。做法是：本地先记一个草稿值让预览跟着走，**手势结束**（松手 / 松键 / 失焦）或 500 毫秒后写一次，一次手势只写一次。
 
@@ -311,8 +351,9 @@ DSH Desktop 0.2.1 的 profile 由应用自己管理。如果装完没有立即�
 
 | 文件 | 角色 |
 |---|---|
-| `lib/index.js` | 宿主半边。声明 `Config`，注册画廊/图集/预览三条 Fetch 路由，启动并看护原生助手 |
-| `lib/client.js` | 浏览器半边。注册 `settings.section` 与 `plugins.item`，渲染画廊、预览、滑块，调用 `ctx.configForms` 写设置 |
+| `lib/index.js` | 宿主半边。声明 `Config`，注册画廊/图集/预览，以及安装/删除/导入共七条 Fetch 路由，启动并看护原生助手 |
+| `lib/pet-store.js` | 装、删、扫描 Codex 目录的共用核心；设置页路由和 `tools/install-pet.mjs` 用的是同一份 |
+| `lib/client.js` | 浏览器半边。注册 `settings.section` 与 `plugins.item`，渲染画廊（含删除）、预览、滑块、安装/导入面板，调用 `ctx.configForms` 写设置 |
 
 两个设置都是 **volatile** 字段，所以 DSH 会把写入直接提交进运行中的引用，并用 `loader/volatile-update` 通知宿主——**宿主据此重启助手**，于是换宠物/改大小都不需要重启 DSH。
 
@@ -616,13 +657,16 @@ python3 tools/port_custom_pet.py ~/.codex/pets/deepseek-2 \
 # 引擎单测：时间轴、角度→注视帧映射、表演时序
 node tools/test-sprite-pet.mjs
 
-# 宿主半边自检：真的加载 lib/index.js，真的调那三条 Fetch 路由，
+# 宿主半边自检：真的加载 lib/index.js，真的调那几条 Fetch 路由，
 # 断言画廊里有哪几只宠物、图集字节对不对、被删掉的宠物是不是 404
 node tools/check-host.mjs
 
 # Codex 兼容：契约模块、宿主图鉴/路由读纯 Codex 宠物、安装器的各种边界
 # （全在临时目录里，注册表是本地假服务，不联网）
 node tools/test-codex-compat.mjs
+
+# 设置页的装/删/导入：宿主四条路由 + 共用核心（本地假注册站、临时 CODEX_HOME）
+node tools/test-pet-management.mjs
 
 # 装一只 Codex 宠物 / 检查一只宠物能不能正常播放
 node tools/install-pet.mjs deepseek --dry-run
