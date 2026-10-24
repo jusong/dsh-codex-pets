@@ -533,18 +533,20 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
             guard !benchProfile.contains("oldpress") else { return event }
             drag.begin(at: point, origin: panel.frame.origin)
             startFollowTimer()
-            // The page drops the gaze when the pet reacts to a click, so
-            // the helper forgets the direction too and puts it back when
-            // the reaction is over.
-            dropGaze()
-            // A click used to interrupt the next performance through the
-            // page's message; the press no longer reaches the page, so the
-            // helper has to do it here.
+            // Nothing below may talk to the web view: the press is exactly
+            // when the web process is most likely asleep, and the first
+            // request that wakes it can hold the main thread for ~60ms --
+            // the press stall the drag log kept recording. The gaze is
+            // forgotten silently (a fresh one is sent once the drag is
+            // over), and the click's reaction waits until the release,
+            // when a no-move press turns out to have been a click after
+            // all -- so a drag never wakes the page up mid-flight either.
+            pressedWithGaze = gazeIndex != -1
+            gazeIndex = -1
+            // A click still interrupts the next performance, the way the
+            // page's message used to.
             performanceTimer?.invalidate()
             schedulePerformance(after: 20)
-            // The pet still answers the click with its reaction animation,
-            // through a request that cannot hold the main thread.
-            reactInPage()
             swallowingMouse = true
             return nil
         case .leftMouseUp:
@@ -563,6 +565,11 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
             return event
         }
     }
+
+    /// Whether the pet was mid-gaze when the press happened -- the gaze was
+    /// then dropped silently (no request could be spared at the press), so
+    /// the page may still be showing that stale frame once the drag ends.
+    private var pressedWithGaze = false
 
     /// Ask the page for the click reaction without handing it the event.
     private func reactInPage() {
@@ -912,8 +919,21 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
             saveOrigin()
         } else {
             activateDSH()
+            // Only a no-move press was a click, and the click's reaction
+            // belongs here: asking at the press itself woke the web
+            // process at the worst possible moment, and asking at every
+            // press made the jump's compositing contend with the very
+            // drags that had just started.
+            reactInPage()
         }
         writeDragLog()
+        // If the press silenced a live gaze without telling the page, that
+        // stale frame is still on the pet; one request now -- after the
+        // drag, when a moment of latency costs nothing -- clears it.
+        if pressedWithGaze {
+            pressedWithGaze = false
+            lookOutInPage()
+        }
         // The pet looks at the cursor again once the drag is over.
         gazeIndex = -1
     }
