@@ -578,17 +578,13 @@ swiftc -O -swift-version 5 -framework AppKit -framework WebKit \
 /tmp/render-pet --pet-dir pets/bsod --runtime runtime --out /tmp/pet.png --after 1800 \
   --messages --script "<灌 pointermove 事件的脚本>"
 
-# 让真机助手把自己的状态倒出来：引擎版本、idle 循环有没有触发、画布尺寸对不对
-# 诊断模式还会跑两遍演练：
-#   注视演练——把面板挪到光标下 → 让页面看向光标 → 再挪开，走一遍「指针离开」
-#   点击演练——在页面里派发一次 pointerdown，看宠物是不是跳起来了
-bin/dsh-pet-macos --pet-dir pets/bsod --runtime runtime/pet-runtime.js \
-  --size 140 --lock /tmp/dsh-pet-diag.lock --diagnose 12000
+# 拖动基准：助手自己控制光标、自己搬窗口（真实拖动交给窗口服务器，测不到），
+# 打印主线程最长被卡多久。这条路径的数字就是「为什么不能由助手搬窗口」的证据
+bin/dsh-pet-macos --pet-dir pets/hoots --size 200 --lock /tmp/dsh-pet-bench.lock --drag-bench
 
-# 拖动基准：用助手自己控制的光标灌 480 次拖动请求，看窗口真的动了多少次、
-# 拖完落后光标多少像素
-bin/dsh-pet-macos --pet-dir pets/hoots --runtime runtime/pet-runtime.js \
-  --size 200 --lock /tmp/dsh-pet-bench.lock --drag-bench
+# 真实拖动的记录：宿主启动助手时带了 --drag-log，每次拖动追加一行
+# （mover=window-server 表示由窗口服务器拖动）
+tail ~/.dsh/dsh-pet-drag.log
 
 # 从 Codex 桌面版重新抽一遍全部素材（会覆盖 pets/ 下的图集和 manifest）
 python3 tools/port_codex_pets.py
@@ -624,9 +620,9 @@ python3 -m venv .venv && .venv/bin/pip install Pillow
 
 ```sh
 swiftc -O -swift-version 5 -target arm64-apple-macosx13.0 \
-  -framework AppKit -framework WebKit native/main.swift -o /tmp/dsh-pet-arm64
+  -framework AppKit -framework QuartzCore native/main.swift -o /tmp/dsh-pet-arm64
 swiftc -O -swift-version 5 -target x86_64-apple-macosx13.0 \
-  -framework AppKit -framework WebKit native/main.swift -o /tmp/dsh-pet-x86_64
+  -framework AppKit -framework QuartzCore native/main.swift -o /tmp/dsh-pet-x86_64
 lipo -create /tmp/dsh-pet-arm64 /tmp/dsh-pet-x86_64 -output bin/dsh-pet-macos
 codesign --force --sign - bin/dsh-pet-macos
 ```
@@ -634,6 +630,9 @@ codesign --force --sign - bin/dsh-pet-macos
 ---
 
 ## 踩过的坑
+
+**拖动卡顿的根因：助手自己搬窗口。**
+每次 `setFrameOrigin` 都是一次和窗口服务器的往返；窗口服务器一忙（5K 120Hz 屏上它常年吃 30~45% CPU），单次搬动就要等十几到三十多毫秒，主线程被卡 40~60ms，宠物就掉在光标后面。实测：只播动画不搬窗口，主线程最长卡 5ms；每个拖动事件搬一次窗口，最长卡 47~58ms——和用 WebView 还是原生图层画宠物无关。修法是 `performDrag(with:)`：按下时把拖动交给窗口服务器，由它自己让窗口跟着光标走（标题栏拖动用的就是这套），助手只监听移动通知、检测松开、区分点击和拖动。顺带把 WKWebView 换成了 Core Animation 图层（图集切格、一层显示一格），助手里不再有网页进程。
 
 **WKWebView 会拒绝 `loadHTMLString` 页面里的所有 file:// 资源。**
 `loadHTMLString(_:baseURL:)` 造出来的页面是 opaque origin，WebKit 直接拒绝加载 `file://` 子资源——**连合法的 `data:` URL 之外的任何图片都失败**，表现是"面板在、影子在、宠物画布全空"。必须用 `loadFileURL(_:allowingReadAccessTo:)` 让页面拿到 file:// origin。

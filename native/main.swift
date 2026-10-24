@@ -1,38 +1,23 @@
 import AppKit
-import WebKit
 import Darwin
+import ImageIO
+import QuartzCore
 
 /**
  * dsh-pet: a tiny macOS helper that owns the always-on-top pet window.
  *
- * The DSH host plugin spawns this binary, passes the HTML path and its own PID,
- * and kills it on unload. The window is an NSPanel at floating level, joins all
- * Spaces, and activates the DSH Desktop app when the pet is clicked.
+ * The DSH host plugin spawns this binary, passes the pet directory and its
+ * own PID, and kills it on unload. The window is an NSPanel at floating
+ * level, joins all Spaces, and activates the DSH Desktop app when the pet is
+ * clicked.
+ *
+ * The pet is drawn with nothing but Core Animation layers, and the helper
+ * must not host a web view: WebKit's layer-tree commits and web-process
+ * wake-ups hold the main thread for 30-80ms at a time, and a dragged window
+ * cannot move while the main thread is held.
  */
 
-/**
- * The bookkeeping of a drag.
- *
- * The pet follows the cursor **directly**: every frame the helper reads the
- * real cursor position and puts the window where it belongs. Two things
- * used to stand between the cursor and the window:
- *
- *   * a WebView stops delivering pointer events as soon as the cursor
- *     leaves it, and the cursor leaves it the moment the window lags
- *     behind -- so a lagging pet stopped receiving the very events that
- *     would have caught it up. The lag fed itself.
- *   * the press itself used to reach the helper through the page: the
- *     WebView had to turn it into a pointer event, the page had to turn
- *     that into a message, and only then did the helper learn where the
- *     press happened. By then the cursor had already travelled, and the
- *     pet started the drag from the wrong place -- so it trailed the
- *     cursor by however far the cursor moved in the meantime, for the
- *     whole drag.
- *
- * The helper now watches the mouse itself, so the drag starts at the
- * position of the press and the pet keeps following whether or not the
- * page hears anything.
- */
+/// The bookkeeping of a drag: where it started, and whether it really moved.
 struct DragState {
     private(set) var isDragging = false
     /// Whether the pet was really moved, as opposed to clicked.
@@ -53,12 +38,6 @@ struct DragState {
                 y: startOrigin.y + (mouse.y - startMouse.y))
     }
 
-    /// Where on the pet the cursor grabbed it, relative to the window.
-    var grabOffset: NSPoint {
-        NSPoint(x: startMouse.x - startOrigin.x, y: startMouse.y - startOrigin.y)
-    }
-
-    /// Note that the pet has really moved, if it has.
     mutating func noteMoved(mouse: NSPoint) {
         if abs(mouse.x - startMouse.x) > 3 || abs(mouse.y - startMouse.y) > 3 {
             moved = true
@@ -70,162 +49,625 @@ struct DragState {
     }
 }
 
-final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate {
+private func number(_ value: Any?) -> Double? {
+    (value as? NSNumber)?.doubleValue
+}
+
+/// One row of the atlas, with a duration per frame. The last frame of a row
+/// usually lingers.
+struct PetAnimation {
+    let name: String
+    let row: Int
+    let durations: [Double]
+    let total: Double
+
+    init(name: String, row: Int, durations: [Double]) {
+        self.name = name
+        self.row = row
+        self.durations = durations.isEmpty ? [120] : durations
+        let sum = self.durations.reduce(0, +)
+        total = sum > 0 ? sum : 1
+    }
+
+    func frame(at elapsed: Double) -> Int {
+        var end = 0.0
+        for (index, duration) in durations.enumerated() {
+            end += duration
+            if elapsed < end { return index }
+        }
+        return durations.count - 1
+    }
+}
+
+/**
+ * A pet is pure data: `pet.json` plus a sprite atlas. The manifest is the
+ * same one the browser preview (`runtime/sprite-pet.js`) plays, and the
+ * defaults below must stay in step with that engine.
+ */
+struct PetManifest {
+    let atlasURL: URL
+    let cellWidth: Int
+    let cellHeight: Int
+    let columns: Int
+    let rows: Int
+    let animations: [String: PetAnimation]
+    let idle: String
+    /// The gaze rows; empty means the pet does not look at the cursor.
+    let lookRows: [Int]
+    let lookCount: Int
+    let lookStep: Double
+    let idleActions: [String]
+    /// The pause between two idle actions, in milliseconds.
+    let idleMin: Double
+    let idleMax: Double
+    let performSteps: [(name: String, repeats: Int)]
+    /// "water", "sparkle", or nil for no splash after a show.
+    let splash: String?
+    let dragRight: String
+    let dragLeft: String
+    let reactName: String
+
+    init?(directory: URL) {
+        let url = directory.appendingPathComponent("pet.json")
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let sheet = object["spritesheetPath"] as? String, !sheet.isEmpty else {
+            return nil
+        }
+        atlasURL = directory.appendingPathComponent(sheet)
+
+        let cell = object["cell"] as? [String: Any]
+        cellWidth = Int(number(cell?["width"]) ?? 192)
+        cellHeight = Int(number(cell?["height"]) ?? 208)
+        let grid = object["grid"] as? [String: Any]
+        columns = max(1, Int(number(grid?["columns"]) ?? 8))
+        rows = max(1, Int(number(grid?["rows"]) ?? 11))
+
+        var animations: [String: PetAnimation] = [:]
+        for (name, raw) in (object["animations"] as? [String: Any]) ?? [:] {
+            guard let spec = raw as? [String: Any] else { continue }
+            let durations = ((spec["durations"] as? [Any]) ?? []).compactMap(number)
+            animations[name] = PetAnimation(name: name, row: Int(number(spec["row"]) ?? 0), durations: durations)
+        }
+        self.animations = animations
+        idle = object["idle"] as? String ?? "idle"
+
+        let look = object["look"] as? [String: Any]
+        lookRows = ((look?["rows"] as? [Any]) ?? []).compactMap(number).map { Int($0) }
+        lookCount = max(1, Int(number(look?["count"]) ?? 16))
+        lookStep = number(look?["stepDegrees"]) ?? 22.5
+
+        let routine = object["idleRoutine"] as? [String: Any] ?? [:]
+        let actions = (routine["animations"] as? [Any])?.compactMap { $0 as? String } ?? []
+        idleActions = actions.isEmpty ? ["waving", "waiting", "review"] : actions
+        var low = 5000.0
+        var high = 5000.0
+        if let every = routine["every"] as? [Any], every.count == 2,
+           let a = number(every[0]), let b = number(every[1]), a > 0 {
+            low = a * 1000
+            high = max(low, b * 1000)
+        } else if let seconds = number(routine["every"]), seconds > 0 {
+            low = seconds * 1000
+            high = low
+        }
+        idleMin = low
+        idleMax = high
+
+        let perform = object["perform"] as? [String: Any] ?? [:]
+        performSteps = ((perform["sequence"] as? [Any]) ?? []).compactMap { step in
+            if let name = step as? String { return (name, 1) }
+            if let spec = step as? [String: Any], let name = spec["animation"] as? String {
+                return (name, max(1, Int(number(spec["repeat"]) ?? 1)))
+            }
+            return nil
+        }
+        switch perform["splash"] {
+        case let kind as String: splash = kind == "sparkle" ? "sparkle" : "water"
+        case let flag as NSNumber where flag.boolValue: splash = "water"
+        default: splash = nil
+        }
+
+        let drag = object["drag"] as? [String: Any]
+        dragRight = drag?["right"] as? String ?? "swim-right"
+        dragLeft = drag?["left"] as? String ?? "swim-left"
+        reactName = (object["react"] as? [String: Any])?["click"] as? String ?? "jumping"
+    }
+}
+
+/**
+ * Plays a pet: one layer shows one atlas cell at a time.
+ *
+ * The atlas is sliced into cells once, so a frame change is a pointer swap
+ * of the layer's contents and never a redraw.
+ */
+final class SpritePlayer {
+    let petLayer = CALayer()
+    let groundShadow = CAGradientLayer()
+    private let manifest: PetManifest
+    private let cells: [[CGImage?]]
+    private let reducedMotion: Bool
+
+    private struct Playing {
+        let animation: PetAnimation
+        let loop: Bool
+        var elapsed = 0.0
+        var frame = 0
+
+        /// Move the clock on; true when a one-shot animation is over.
+        mutating func advance(by delta: Double) -> Bool {
+            elapsed += delta
+            frame = animation.frame(at: elapsed)
+            guard elapsed >= animation.total else { return false }
+            if loop {
+                elapsed = elapsed.truncatingRemainder(dividingBy: animation.total)
+                return false
+            }
+            return true
+        }
+    }
+
+    private struct Sequence {
+        let plan: [PetAnimation]
+        var index = 0
+    }
+
+    private var animation: Playing?
+    private var sequence: Sequence?
+    private var dragAnimation: Playing?
+    private var lookFrame: (row: Int, column: Int)?
+    private var reacting = false
+    private var idleElapsed = 0.0
+    private var idleWait = 0.0
+    private var idleCursor = 0
+    private var shownCell: (row: Int, column: Int)?
+
+    init?(manifest: PetManifest, reducedMotion: Bool) {
+        guard let source = CGImageSourceCreateWithURL(manifest.atlasURL as CFURL, nil),
+              let atlas = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            return nil
+        }
+        self.manifest = manifest
+        self.reducedMotion = reducedMotion
+        cells = (0..<manifest.rows).map { row in
+            (0..<manifest.columns).map { column in
+                atlas.cropping(to: CGRect(x: column * manifest.cellWidth,
+                                          y: row * manifest.cellHeight,
+                                          width: manifest.cellWidth,
+                                          height: manifest.cellHeight))
+            }
+        }
+        idleWait = pickIdleWait()
+
+        petLayer.contentsGravity = .resizeAspect
+        petLayer.magnificationFilter = .nearest
+        petLayer.minificationFilter = .nearest
+        petLayer.shadowColor = CGColor(srgbRed: 8 / 255, green: 22 / 255, blue: 44 / 255, alpha: 1)
+        petLayer.shadowOpacity = 0.22
+        petLayer.shadowRadius = 5
+        petLayer.shadowOffset = CGSize(width: 0, height: -8)
+
+        let ground = CGColor(srgbRed: 11 / 255, green: 31 / 255, blue: 58 / 255, alpha: 0.2)
+        groundShadow.type = .radial
+        groundShadow.startPoint = CGPoint(x: 0.5, y: 0.5)
+        groundShadow.endPoint = CGPoint(x: 1, y: 1)
+        groundShadow.colors = [ground, ground, ground.copy(alpha: 0)!]
+        groundShadow.locations = [0, 0.7, 1]
+
+        play(manifest.idle, loop: true)
+    }
+
+    /// Lay the layers out in a container of the given size.
+    func layout(in bounds: CGRect, scale: CGFloat) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        petLayer.frame = bounds
+        petLayer.contentsScale = scale
+        // The ground shadow sits just under the feet, which land around 70%
+        // down the cell.
+        groundShadow.bounds = CGRect(x: 0, y: 0, width: bounds.width * 0.52, height: bounds.height * 0.06)
+        groundShadow.position = CGPoint(x: bounds.midX, y: bounds.minY + bounds.height * 0.23)
+        CATransaction.commit()
+    }
+
+    // -- clock -------------------------------------------------------------
+
+    func tick(delta: Double) {
+        if reducedMotion {
+            show(idleRow, 0)
+            return
+        }
+        if sequence != nil {
+            stepSequence(delta)
+            return
+        }
+        if var drag = dragAnimation {
+            _ = drag.advance(by: delta)
+            dragAnimation = drag
+            draw()
+            return
+        }
+        guard var active = animation else {
+            draw()
+            return
+        }
+        if active.advance(by: delta) {
+            animation = nil
+            reacting = false
+            play(manifest.idle, loop: true)
+            return
+        }
+        animation = active
+        // The idle rows barely move on their own, so every few seconds the
+        // pet takes a short turn at another row.
+        if active.animation.name == manifest.idle {
+            idleElapsed += delta
+            if idleElapsed >= idleWait {
+                idleElapsed = 0
+                idleWait = pickIdleWait()
+                playIdleAction()
+            }
+        }
+        draw()
+    }
+
+    private func pickIdleWait() -> Double {
+        guard manifest.idleMax > manifest.idleMin else { return manifest.idleMin }
+        return Double.random(in: manifest.idleMin...manifest.idleMax)
+    }
+
+    private func playIdleAction() {
+        let options = manifest.idleActions
+        for offset in 0..<options.count {
+            let name = options[(idleCursor + offset) % options.count]
+            guard name != manifest.idle, manifest.animations[name] != nil else { continue }
+            idleCursor = (idleCursor + offset + 1) % options.count
+            play(name, loop: false)
+            return
+        }
+    }
+
+    /// Play one named animation; an unknown name falls back to idle, so a
+    /// typo in a manifest can never leave the pet frozen.
+    private func play(_ name: String, loop: Bool) {
+        guard let spec = manifest.animations[name] else {
+            if name != manifest.idle { play(manifest.idle, loop: true) }
+            return
+        }
+        animation = Playing(animation: spec, loop: loop)
+        idleElapsed = 0
+        applyState(name)
+        draw()
+    }
+
+    private var idleRow: Int { manifest.animations[manifest.idle]?.row ?? 0 }
+
+    // -- behaviour ---------------------------------------------------------
+
+    /// The scheduled show. Returns its length in milliseconds.
+    func perform() -> Double {
+        var plan: [PetAnimation] = []
+        for step in manifest.performSteps {
+            guard let spec = manifest.animations[step.name] else { continue }
+            plan.append(contentsOf: Array(repeating: spec, count: step.repeats))
+        }
+        guard !plan.isEmpty else {
+            play(manifest.idle, loop: true)
+            return 0
+        }
+        sequence = Sequence(plan: plan)
+        playStep()
+        return plan.reduce(0) { $0 + $1.total }
+    }
+
+    private func playStep() {
+        guard let sequence else { return }
+        let step = sequence.plan[sequence.index]
+        animation = Playing(animation: step, loop: false)
+        applyState(step.name)
+        draw()
+    }
+
+    private func stepSequence(_ delta: Double) {
+        guard var sequence, var active = animation else { return }
+        if active.advance(by: delta) {
+            sequence.index += 1
+            if sequence.index >= sequence.plan.count {
+                self.sequence = nil
+                play(manifest.idle, loop: true)
+                if let kind = manifest.splash { splash(kind: kind) }
+                return
+            }
+            self.sequence = sequence
+            playStep()
+            return
+        }
+        animation = active
+        draw()
+    }
+
+    /// Answer a click with the reaction animation; the reaction outranks
+    /// the gaze, so the pet jumps instead of staring.
+    func react() {
+        stopAll()
+        lookFrame = nil
+        guard manifest.animations[manifest.reactName] != nil else {
+            play(manifest.idle, loop: true)
+            return
+        }
+        reacting = true
+        play(manifest.reactName, loop: false)
+    }
+
+    /// Drop the show, the reaction and the gaze, and stand still.
+    func interrupt() {
+        stopAll()
+        lookFrame = nil
+        play(manifest.idle, loop: true)
+    }
+
+    private func stopAll() {
+        sequence = nil
+        dragAnimation = nil
+        reacting = false
+    }
+
+    /// Run left or right while dragged; nil stands still.
+    func setDragDirection(right: Bool?) {
+        guard let right else {
+            guard dragAnimation != nil else { return }
+            dragAnimation = nil
+            applyState(animation?.animation.name ?? manifest.idle)
+            draw()
+            return
+        }
+        let name = right ? manifest.dragRight : manifest.dragLeft
+        guard let spec = manifest.animations[name], dragAnimation?.animation.name != name else { return }
+        dragAnimation = Playing(animation: spec, loop: true)
+        applyState(name)
+        draw()
+    }
+
+    func endDrag() {
+        dragAnimation = nil
+        play(manifest.idle, loop: true)
+    }
+
+    /// Look in a direction: 0 degrees is straight up, growing clockwise.
+    func look(degrees: Double) {
+        guard !manifest.lookRows.isEmpty else { return }
+        let count = manifest.lookCount
+        // Rounded the way the browser engine's Math.round does.
+        let bucket = Int((degrees / manifest.lookStep + 0.5).rounded(.down))
+        let index = ((bucket % count) + count) % count
+        let rowIndex = index / manifest.columns
+        let row = manifest.lookRows.indices.contains(rowIndex) ? manifest.lookRows[rowIndex] : manifest.lookRows[0]
+        let next = (row: row, column: index % manifest.columns)
+        if let current = lookFrame, current == next { return }
+        lookFrame = next
+        draw()
+    }
+
+    func lookOut() {
+        guard lookFrame != nil else { return }
+        lookFrame = nil
+        draw()
+    }
+
+    // -- drawing -----------------------------------------------------------
+
+    /// A show beats a drag, a drag beats a reaction, a reaction beats the
+    /// gaze, and the gaze beats the animation.
+    private func draw() {
+        if sequence != nil, let active = animation { return show(active.animation.row, active.frame) }
+        if let drag = dragAnimation { return show(drag.animation.row, drag.frame) }
+        if reacting, let active = animation { return show(active.animation.row, active.frame) }
+        if let look = lookFrame { return show(look.row, look.column) }
+        if let active = animation { return show(active.animation.row, active.frame) }
+        show(idleRow, 0)
+    }
+
+    private func show(_ row: Int, _ column: Int) {
+        if let shown = shownCell, shown == (row, column) { return }
+        guard cells.indices.contains(row), cells[row].indices.contains(column) else { return }
+        shownCell = (row, column)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        petLayer.contents = cells[row][column]
+        CATransaction.commit()
+    }
+
+    /// The ground shadow shrinks while the pet is in the air.
+    private func applyState(_ name: String) {
+        let (scale, opacity): (CGFloat, Float)
+        switch name {
+        case "jumping": (scale, opacity) = (0.72, 0.55)
+        case "waving": (scale, opacity) = (0.92, 1)
+        case "failed": (scale, opacity) = (1.06, 0.28)
+        default: (scale, opacity) = (1, 1)
+        }
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(reducedMotion ? 0 : 0.18)
+        groundShadow.setAffineTransform(CGAffineTransform(scaleX: scale, y: scale))
+        groundShadow.opacity = opacity
+        CATransaction.commit()
+    }
+
+    /// Particles that fly up from the pet's feet after a show.
+    private func splash(kind: String) {
+        guard !reducedMotion, let host = petLayer.superlayer else { return }
+        let bounds = host.bounds
+        let now = CACurrentMediaTime()
+        let sparkle = kind == "sparkle"
+        let color = sparkle
+            ? CGColor(srgbRed: 1, green: 233 / 255, blue: 168 / 255, alpha: 1)
+            : CGColor(srgbRed: 143 / 255, green: 216 / 255, blue: 1, alpha: 1)
+        var added: [CALayer] = []
+
+        for _ in 0..<20 {
+            let particle = CALayer()
+            particle.bounds = sparkle ? CGRect(x: 0, y: 0, width: 6, height: 6) : CGRect(x: 0, y: 0, width: 7, height: 10)
+            particle.cornerRadius = sparkle ? 2 : 3.5
+            particle.backgroundColor = color
+            particle.shadowColor = color
+            particle.shadowOpacity = 0.9
+            particle.shadowRadius = sparkle ? 4 : 3
+            particle.shadowOffset = .zero
+            particle.opacity = 0
+            let start = CGPoint(x: bounds.width * (0.5 + Double.random(in: -0.06...0.06)),
+                                y: bounds.height * 0.2)
+            particle.position = start
+            // Up, give or take 63 degrees either side.
+            let angle = Double.pi / 2 + Double.random(in: -1.1...1.1)
+            let distance = 16 + Double.random(in: 0...44)
+            let end = CGPoint(x: start.x + cos(angle) * distance, y: start.y + sin(angle) * distance)
+            let early = CGPoint(x: start.x + (end.x - start.x) * 0.18, y: start.y + (end.y - start.y) * 0.18)
+
+            let move = CAKeyframeAnimation(keyPath: "position")
+            move.values = [start, early, end].map { NSValue(point: $0) }
+            move.keyTimes = [0, 0.15, 1]
+            let fade = CAKeyframeAnimation(keyPath: "opacity")
+            fade.values = [0, 1, 0]
+            fade.keyTimes = [0, sparkle ? 0.2 : 0.15, 1]
+            let grow = CAKeyframeAnimation(keyPath: "transform.scale")
+            grow.values = sparkle ? [0.3, 1, 0.4] : [0.35, 1.15, 0.3]
+            grow.keyTimes = [0, 0.15, 1]
+            var parts: [CAAnimation] = [move, fade, grow]
+            if sparkle {
+                let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+                spin.fromValue = 0
+                spin.toValue = Double.pi
+                parts.append(spin)
+            }
+            let group = CAAnimationGroup()
+            group.animations = parts
+            group.duration = Double.random(in: 0.85...1.1)
+            group.beginTime = now + Double.random(in: 0...0.1)
+            group.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.7, 0.3, 1)
+            group.fillMode = .both
+            group.isRemovedOnCompletion = false
+            particle.add(group, forKey: "fly")
+            host.addSublayer(particle)
+            added.append(particle)
+        }
+
+        if !sparkle {
+            for index in 0..<2 {
+                let ripple = CAShapeLayer()
+                ripple.bounds = CGRect(x: 0, y: 0, width: 72, height: 14)
+                ripple.position = CGPoint(x: bounds.midX, y: bounds.height * 0.16 + 7)
+                ripple.path = CGPath(ellipseIn: ripple.bounds, transform: nil)
+                ripple.fillColor = nil
+                ripple.strokeColor = color
+                ripple.lineWidth = 2
+                ripple.opacity = 0
+                let grow = CABasicAnimation(keyPath: "transform.scale")
+                grow.fromValue = 0.4
+                grow.toValue = 1.9
+                let fade = CABasicAnimation(keyPath: "opacity")
+                fade.fromValue = 0.75
+                fade.toValue = 0
+                let group = CAAnimationGroup()
+                group.animations = [grow, fade]
+                group.duration = 1.05
+                group.beginTime = now + Double(index) * 0.16
+                group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                group.fillMode = .both
+                group.isRemovedOnCompletion = false
+                ripple.add(group, forKey: "ripple")
+                host.addSublayer(ripple)
+                added.append(ripple)
+            }
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            added.forEach { $0.removeFromSuperlayer() }
+        }
+    }
+}
+
+/// The pet's content view: it takes the clicks and hands them to the
+/// controller.
+final class PetView: NSView {
+    weak var controller: PetController?
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) { controller?.beginDrag(with: event) }
+    override func mouseDragged(with event: NSEvent) { controller?.continueDrag() }
+    override func mouseUp(with event: NSEvent) { controller?.endDrag() }
+}
+
+final class PetController: NSObject, NSApplicationDelegate {
     private var panel: NSPanel!
-    private var webView: WKWebView!
+    private var player: SpritePlayer!
     private var petDir = ""
-    private var runtimePath = ""
     private var statePath = ""
     private var lockPath = ""
+    private var dragLogPath = ""
     private var size: CGFloat = 220
     private var parentPid: pid_t = 0
     private var lockFD: Int32 = -1
     private var levelName = "floating"
-    private var selfTest = false
-    private var diagnose = false
-    private var diagnoseAfter: Double = 0
-    private var startMouse = NSPoint.zero
-    private var startOrigin = NSPoint.zero
-    /// The window origin as the last watch tick saw it, so a real drag can
-    /// count the window server's moves instead of its own.
-    private var lastSeenOrigin = NSPoint.zero
+    private var performNow = false
+    private var dragBench = false
+
     private var drag = DragState()
-    /// Where the cursor is, as far as the drag is concerned.
-    ///
-    /// The real cursor is read from the system, but the benchmark needs a
-    /// cursor it controls, so it can hand the drag a path that moves faster
-    /// than any display.
+    /// The benchmark drives the drag with a cursor it controls.
     private var cursorOverride: NSPoint?
     private var cursor: NSPoint { cursorOverride ?? NSEvent.mouseLocation }
-    /// Whether the mouse button counts as held down.
-    ///
-    /// The benchmark drives the drag with a cursor it controls, and a
-    /// cursor it controls has no button under it.
-    private var buttonOverride: Bool?
-    private var buttonDown: Bool {
-        buttonOverride ?? (NSEvent.pressedMouseButtons & 1 != 0)
-    }
-    private var followTimer: Timer?
-    /// The mouse monitor that sees the press before the page does.
-    ///
-    /// A mouse-down on the pet reaches the WebView and the page before it
-    /// reaches the helper over the message bridge. Watching the event
-    /// here means the drag starts at the exact spot of the press.
-    private var mouseMonitor: Any?
-    /// The timer that keeps the gaze in step with the cursor.
-    private var gazeTimer: Timer?
-    /// Which way the pet is looking, as one of the sixteen buckets.
-    ///
-    /// `-1` means "not looking", which is also how the helper asks the
-    /// page to drop the gaze.
-    private var gazeIndex = -1
-    /// The biggest gap between the cursor and the window during a drag.
-    ///
-    /// This is the distance a person would see the pet trailing behind,
-    /// so it is worth writing down.
-    private var maxTrail: Double = 0
-    /// When the pet first moved after the press.
-    private var firstMoveTime: Double = 0
-    /// When the press happened.
-    private var pressTime: Double = 0
-    /// Where to write a line about every drag.
-    private var dragLogPath = ""
-    /// Where the cursor was before the press benchmark moved it.
-    private var pressBenchmarkOrigin = NSPoint.zero
-    /// How many times the window has actually been moved during this drag.
-    private var windowMoves = 0
-    /// How many times the window was asked to move, moved or not.
-    private var moveAttempts = 0
-    /// How long the window server took to answer the probe, in total.
-    private var probeCost: Double = 0
-    private var probeCount = 0
-    private var dragRequests = 0
-    /// Whether to measure where the window server painted the window.
-    private var measureLag = false
-    /// How far behind the cursor the window has ever been painted.
-    private var maxDragLag: Double = 0
-    /// How many frames the drag has run for.
-    private var frameCounter = 0
-    /// When the window was moved, to measure how regular the moves are.
-    private var moveStamps: [Double] = []
-    /// When the follow timer fired, to measure how regular that is.
-    private var tickStamps: [Double] = []
-    /// The longest the main thread was blocked, and how many beats it took.
-    private var heartbeatGaps: () -> Double = { 0 }
-    private var heartbeatCount: () -> Int = { 0 }
-    /// How long the window moves have taken in total.
-    private var moveCost: Double = 0
-    private var dragBench = false
-    /// Which parts of the drag the benchmark switches off.
-    ///
-    /// The benchmark has to be able to take the measurement out of the
-    /// picture, otherwise it ends up measuring its own probe: reading the
-    /// window list is a synchronous conversation with the window server, and
-    /// it happens right after a window move, which is exactly when the
-    /// window server has the least time to spare.
-    private var benchProfile: Set<String> = []
-    private var performNow = false
-    private var performanceTimer: Timer?
-    private var trackingArea: NSTrackingArea?
-    private var coverView: PetCoverView?
-    private var pointerInsidePanel = false
-    private var lookOutCount = 0
 
-    // A pet is pure data: a manifest plus an atlas. The manifest carries the
-    // animation rows, so adding a pet never means changing any code.
-    private var manifest: [String: Any] = [:]
-    private var manifestScript = ""
-    private var hasManifest = false
+    private var animationTimer: Timer?
+    private var lastTick = CACurrentMediaTime()
+    private var gazeTimer: Timer?
+    private var performanceTimer: Timer?
+    /// Keeps App Nap and timer coalescing away while the pet is in the hand.
+    private var dragActivity: NSObjectProtocol?
+    /// When the drag last moved sideways, so a pet held still stops running.
+    private var lastSidewaysMove: CFTimeInterval = 0
+    /// Whether the window server is carrying the current drag.
+    private var serverDrag = false
+    private var releaseTimer: Timer?
+    private var lastSeenOrigin = NSPoint.zero
+
+    // What a drag did, for the drag log.
+    private var pressTime: CFTimeInterval = 0
+    private var firstMoveTime: CFTimeInterval = 0
+    private var lastMoveTime: CFTimeInterval = 0
+    private var worstMoveGap: Double = 0
+    private var windowMoves = 0
+    private var maxTrail: Double = 0
+    private var moveCost: Double = 0
+    private var watchdog: Timer?
+    private var lastBeat: CFTimeInterval = 0
+    private var worstBlock: Double = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         parseArguments()
         acquireLock()
-        guard hasManifest else {
-            NSLog("dsh-pet: no usable pet manifest, exiting")
+        guard let manifest = PetManifest(directory: URL(fileURLWithPath: petDir)) else {
+            NSLog("dsh-pet: no usable pet manifest in \(petDir), exiting")
             NSApp.terminate(nil)
             return
         }
+        guard let player = SpritePlayer(
+            manifest: manifest,
+            reducedMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        ) else {
+            NSLog("dsh-pet: cannot read the atlas at \(manifest.atlasURL.path), exiting")
+            NSApp.terminate(nil)
+            return
+        }
+        self.player = player
         createPanel()
-        loadPet()
+        startClocks()
         watchParent()
         if dragBench {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-                guard let self else { return }
-                if self.benchProfile.contains("press")
-                    || self.benchProfile.contains("oldpress") {
-                    self.runPressBenchmark()
-                } else {
-                    self.runDragBenchmark()
-                }
-            }
-        }
-        if diagnose { runGazeDrill() }
-    }
-
-    /// Exercise the "the cursor left the pet" path.
-    ///
-    /// The gaze is set by a pointer move over the panel and cleared when the
-    /// cursor goes away -- and a cursor that goes away is hard to fake on a
-    /// machine where synthetic input is dropped. So the drill puts the panel
-    /// under the real cursor, makes the page look at it, and then slides the
-    /// panel out from under the cursor again: the window moving away is the
-    /// same transition as the cursor moving away.
-    private func runGazeDrill() {
-        let mouse = NSEvent.mouseLocation
-        panel.setFrameOrigin(NSPoint(x: mouse.x - size / 2, y: mouse.y - size / 2))
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            // Make the page gaze at the cursor, the way a pointer move would.
-            self.webView.evaluateJavaScript(
-                "window.__pet && window.__pet.updateLook(window.innerWidth / 2, 5)"
-            ) { _, error in
-                if let error {
-                    FileHandle.standardError.write("gaze drill failed: \(error)\n".data(using: .utf8)!)
-                }
-            }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
-            self.panel.setFrameOrigin(NSPoint(x: self.panel.frame.origin.x + 600, y: self.panel.frame.origin.y))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.runDragBenchmark() }
+        } else if performNow {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.startPerformance() }
+        } else {
+            schedulePerformance()
         }
     }
 
@@ -238,158 +680,22 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
         while let argument = iterator.next() {
             switch argument {
             case "--pet-dir": petDir = iterator.next() ?? ""
-            case "--runtime": runtimePath = iterator.next() ?? ""
             case "--state": statePath = iterator.next() ?? ""
             case "--lock": lockPath = iterator.next() ?? ""
+            case "--drag-log": dragLogPath = iterator.next() ?? ""
             case "--size": size = CGFloat(Double(iterator.next() ?? "") ?? 220)
             case "--parent-pid": parentPid = pid_t(Int32(iterator.next() ?? "") ?? 0)
             case "--level": levelName = iterator.next() ?? "floating"
-            case "--self-test": selfTest = true
             case "--perform-now": performNow = true
             case "--drag-bench": dragBench = true
-            case "--drag-log": dragLogPath = iterator.next() ?? ""
-            case "--bench-profile": benchProfile = Set((iterator.next() ?? "").split(separator: ",").map(String.init))
-            case "--diagnose": diagnose = true; diagnoseAfter = Double(iterator.next() ?? "") ?? 0
+            // The host still passes the web runtime; the helper no longer
+            // needs it.
+            case "--runtime": _ = iterator.next()
             default: break
             }
         }
         size = min(260, max(120, size))
-        loadManifest()
     }
-
-    /// Read the pet's manifest: the atlas path plus the animation rows.
-    /// Everything the player needs travels in this one file.
-    private func loadManifest() {
-        guard !petDir.isEmpty else { return }
-        let url = URL(fileURLWithPath: petDir).appendingPathComponent("pet.json")
-        guard let data = try? Data(contentsOf: url),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            NSLog("dsh-pet: no readable manifest at \(url.path)")
-            return
-        }
-        guard let sheet = object["spritesheetPath"] as? String, !sheet.isEmpty else {
-            NSLog("dsh-pet: \(url.path) has no spritesheetPath")
-            return
-        }
-        manifest = object
-
-        // The player page lives in the runtime directory, so a relative atlas
-        // path would resolve against the wrong place. Resolve it once, here,
-        // against the pet's own directory.
-        let resolved = URL(fileURLWithPath: petDir).appendingPathComponent(sheet)
-        manifest["spritesheetPath"] = resolved.absoluteString
-        guard let encoded = try? JSONSerialization.data(withJSONObject: manifest),
-              var json = String(data: encoded, encoding: .utf8) else { return }
-        // The JSON lands inside a <script> tag, so escape anything that
-        // could close it early.
-        json = json.replacingOccurrences(of: "<", with: "\\u003c")
-        manifestScript = "window.__DSH_PET_MANIFEST__ = \(json);"
-        hasManifest = true
-    }
-
-    /// A probe that reports what the page is really doing.
-    ///
-    /// The pet's animation clock lives inside the WebView, so "the pet looks
-    /// frozen" is impossible to debug from the outside: the window keeps
-    /// rendering, but nothing in the native side can tell a stalled
-    /// requestAnimationFrame loop from a pet that is simply standing still.
-    /// This script instruments the engine's own step loop and records what it
-    /// sees, so `--diagnose` can print the truth.
-    private static let diagnosticScript = """
-    window.__dshDiag = {
-      t0: performance.now(),
-      steps: 0,
-      sizeMismatch: 0,
-      notSane: 0,
-      plays: [],
-      samples: [],
-      errors: []
-    };
-    window.addEventListener('error', function (event) {
-      window.__dshDiag.errors.push(String(event.message) + ' @ ' + event.lineno);
-    });
-    window.addEventListener('dsh-pet-ready', function (event) {
-      window.__dshDiag.pet = event.detail.pet;
-      window.__pet = event.detail.pet;
-    });
-    (function () {
-      var d = window.__dshDiag;
-      var proto = window.DSHSpritePet && window.DSHSpritePet.SpritePet.prototype;
-      d.hasEngine = !!proto;
-      if (!proto) return;
-      var origStep = proto.step;
-      var origPlay = proto.play;
-      // Is the engine that actually got injected the one on disk?
-      d.engineHasIdleRoutine = String(origStep).indexOf('idleElapsed') >= 0
-        || String(origPlay).indexOf('idleElapsed') >= 0;
-      proto.step = function (now) {
-        d.steps += 1;
-        d.lastDelta = Math.round((now - this.lastTime) * 100) / 100;
-        try {
-          var rect = this.canvas.getBoundingClientRect();
-          if (this.canvas.width !== Math.round(rect.width * (window.devicePixelRatio || 1))) d.sizeMismatch += 1;
-          if (!(rect.width > 1 && rect.height > 1)) d.notSane += 1;
-        } catch (error) {}
-        return origStep.call(this, now);
-      };
-      proto.play = function (name, options) {
-        d.plays.push({
-          t: Math.round(performance.now() - d.t0),
-          name: name,
-          loop: !!(options && options.loop)
-        });
-        if (d.plays.length > 60) d.plays.shift();
-        return origPlay.call(this, name, options);
-      };
-      setInterval(function () {
-        var pet = d.pet;
-        if (!pet) {
-          d.samples.push({ t: Math.round(performance.now() - d.t0), pet: false });
-          return;
-        }        var rect = pet.canvas.getBoundingClientRect();
-        d.samples.push({
-          t: Math.round(performance.now() - d.t0),
-          anim: pet.animation && pet.animation.name,
-          frame: pet.animation && pet.animation.frame,
-          animElapsed: pet.animation && Math.round(pet.animation.elapsed || 0),
-          idleElapsed: Math.round(pet.idleElapsed || 0),
-          look: pet.lookFrame ? pet.lookFrame.row + '/' + pet.lookFrame.column : null,
-          routineMs: pet.idleRoutineMin,
-          actions: pet.idleActions && pet.idleActions.join(','),
-          reduced: pet.reducedMotion,
-          canvas: pet.canvas.width + 'x' + pet.canvas.height,
-          rect: Math.round(rect.width) + 'x' + Math.round(rect.height),
-          dpr: window.devicePixelRatio
-        });
-        if (d.samples.length > 80) d.samples.shift();
-      }, 500);
-      // A click drill: press the pet and see whether it answers with a jump.
-      // The click is dispatched inside the page, so it does not need the
-      // system to let synthetic input through.
-      setTimeout(function () {
-        var pet = d.pet;
-        var canvas = document.getElementById('pet');
-        if (!pet || !canvas) { d.click = { error: 'no pet' }; return; }
-        var rect = canvas.getBoundingClientRect();
-        var options = {
-          bubbles: true,
-          clientX: rect.left + rect.width / 2,
-          clientY: rect.top + 5,
-          button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true
-        };
-        document.dispatchEvent(new PointerEvent('pointermove', options));
-        d.click = { before: pet.animation && pet.animation.name, look: pet.lookFrame ? pet.lookFrame.row : null };
-        document.dispatchEvent(new PointerEvent('pointerdown', options));
-        d.click.after = pet.animation && pet.animation.name;
-        d.click.reacting = pet.reacting;
-        d.click.lookAfter = pet.lookFrame ? pet.lookFrame.row : null;
-        setTimeout(function () {
-          d.click.settled = pet.animation && pet.animation.name;
-          d.click.reactingAfter = pet.reacting;
-        }, 1200);
-      }, 4500);
-    })();
-    """
 
     /// One pet per DSH host: a second helper exits instead of stacking windows.
     private func acquireLock() {
@@ -420,361 +726,279 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
-        // The drag belongs to the window server, not to this process: a
-        // server-side move session follows the cursor even when the app's
-        // own main thread has been stalled -- the way dragging any window
-        // stays smooth while the app is beachballed. Every press lands on
-        // the cover view below, which hands the drag to AppKit.
-        panel.isMovableByWindowBackground = true
+        panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.worksWhenModal = true
         panel.isFloatingPanel = true
         panel.becomesKeyOnlyIfNeeded = true
 
-        let configuration = WKWebViewConfiguration()
-        configuration.userContentController.add(self, name: "pet")
-        if !runtimePath.isEmpty, let runtime = try? String(contentsOfFile: runtimePath, encoding: .utf8) {
-            configuration.userContentController.addUserScript(WKUserScript(
-                source: runtime,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: true
-            ))
+        let view = PetView(frame: NSRect(x: 0, y: 0, width: size, height: size))
+        view.controller = self
+        view.wantsLayer = true
+        if let host = view.layer {
+            host.backgroundColor = .clear
+            host.addSublayer(player.groundShadow)
+            host.addSublayer(player.petLayer)
         }
-        // The sprite engine that plays the atlas, plus the manifest itself.
-        let engine = runtimeDirectory().appendingPathComponent("sprite-pet.js")
-        if let source = try? String(contentsOfFile: engine.path, encoding: .utf8) {
-            configuration.userContentController.addUserScript(WKUserScript(
-                source: source,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: true
-            ))
-        }
-        if !manifestScript.isEmpty {
-            configuration.userContentController.addUserScript(WKUserScript(
-                source: manifestScript,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: true
-            ))
-        }
-        if diagnose {
-            configuration.userContentController.addUserScript(WKUserScript(
-                source: Self.diagnosticScript,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: true
-            ))
-        }
-        webView = WKWebView(
-            frame: NSRect(x: 0, y: 0, width: size, height: size),
-            configuration: configuration
-        )
-        webView.autoresizingMask = [.width, .height]
-        webView.navigationDelegate = self
-        webView.setValue(false, forKey: "drawsBackground")
-        webView.underPageBackgroundColor = .clear
-        webView.allowsBackForwardNavigationGestures = false
-
-        panel.contentView = webView
+        player.layout(in: view.bounds, scale: panel.backingScaleFactor)
+        panel.contentView = view
         panel.orderFrontRegardless()
-
-        // The cover takes every click before the WebView can see it and
-        // tells AppKit the press may move the window, which starts the
-        // window server's move session -- the drag never touches this
-        // process's main thread again. The page has needed no real event
-        // since the gaze and the reaction went native.
-        let cover = PetCoverView(frame: webView.bounds)
-        cover.autoresizingMask = [.width, .height]
-        // The old press benchmark needs the page to hear presses again.
-        if benchProfile.contains("oldpress") { cover.eatsEvents = false }
-        webView.addSubview(cover)
-        coverView = cover
-
-        // The pet looks at the cursor while it is over the panel, and the
-        // gaze rows are static frames -- so the pet stops animating until it
-        // is told the cursor is gone. A WebView only gets pointer events
-        // while the pointer is over it, so the page can never notice on its
-        // own; the window has to say it.
-        let tracker = NSTrackingArea(
-            rect: webView.bounds,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-            owner: self,
-            userInfo: nil
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(windowDidMove(_:)),
+            name: NSWindow.didMoveNotification, object: panel
         )
-        webView.addTrackingArea(tracker)
-        trackingArea = tracker
-        watchGaze()
-        watchPresses()
     }
 
-    /// Watch for the press, so the drag can start where it happened.
-    ///
-    /// The event monitor runs before the window hands the event to the
-    /// WebView, so the helper knows where the press happened while the
-    /// page is still working out what to do with it. The event is passed
-    /// on unchanged: the page still needs it to play the pet's reaction.
-    private func watchPresses() {
-        mouseMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.leftMouseDown, .leftMouseUp, .leftMouseDragged]
-        ) { [weak self] event in
-            self?.handleMouseEvent(event) ?? event
+    // -- clocks ------------------------------------------------------------
+
+    private func startClocks() {
+        // Frames last 110ms and more, so 60 ticks a second is plenty; common
+        // mode keeps them running while AppKit tracks the mouse.
+        let animation = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in self?.tick() }
+        animation.tolerance = 0.002
+        RunLoop.main.add(animation, forMode: .common)
+        animationTimer = animation
+        lastTick = CACurrentMediaTime()
+
+        let gaze = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in self?.updateGaze() }
+        gaze.tolerance = 0.005
+        RunLoop.main.add(gaze, forMode: .common)
+        gazeTimer = gaze
+    }
+
+    private func tick() {
+        let now = CACurrentMediaTime()
+        let delta = (now - lastTick) * 1000
+        lastTick = now
+        if drag.isDragging, now - lastSidewaysMove > 0.2 {
+            player.setDragDirection(right: nil)
         }
-    }
-
-    /// Whether the press that began the current interaction was kept from
-    /// the WebView -- and so its release and its drag events must be kept
-    /// from it too.
-    private var swallowingMouse = false
-    /// Whether this helper moves the window itself, following the cursor
-    /// on a timer. Only the benchmark needs that, for a drag no real hand
-    /// is performing: a real drag is carried by the window server, and
-    /// the helper only watches -- which is the whole point, because a
-    /// server-side move cannot be stalled by anything this process's main
-    /// thread is busy with.
-    private var syntheticMover = false
-
-    /// React to the mouse before the page gets the chance to.
-    ///
-    /// The drag events are swallowed on purpose: every one of them used to
-    /// reach the WebView, and the press especially made WebKit hold the
-    /// main thread for ~50ms -- the time to ask the sleeping web process
-    /// what the page meant to do with the click. The pet froze under the
-    /// cursor at exactly the moment the hand started moving, which is the
-    /// lag the drag log kept recording. The page now hears nothing: the
-    /// window is moved natively and the click's reaction is asked for
-    /// through an asynchronous request, so nothing in WebKit can stand
-    /// between the cursor and the window.
-    private func handleMouseEvent(_ event: NSEvent) -> NSEvent? {
-        switch event.type {
-        case .leftMouseDown:
-            let point = panel.convertPoint(toScreen: event.locationInWindow)
-            // Only a press on the pet itself starts a drag.
-            guard panel.frame.contains(point) else { return event }
-            pressTime = CFAbsoluteTimeGetCurrent()
-            maxTrail = 0
-            firstMoveTime = 0
-            windowMoves = 0
-            moveAttempts = 0
-            moveStamps = []
-            tickStamps = []
-            // The benchmark can put the drag back on the old path, where
-            // the page reported the press, to see what that costs.
-            guard !benchProfile.contains("oldpress") else { return event }
-            drag.begin(at: point, origin: panel.frame.origin)
-            startOrigin = panel.frame.origin
-            lastSeenOrigin = startOrigin
-            startFollowTimer()
-            // Nothing below may talk to the web view: the press is exactly
-            // when the web process is most likely asleep, and the first
-            // request that wakes it can hold the main thread for ~60ms --
-            // the press stall the drag log kept recording. The gaze is
-            // forgotten silently (a fresh one is sent once the drag is
-            // over), and the click's reaction waits until the release,
-            // when a no-move press turns out to have been a click after
-            // all -- so a drag never wakes the page up mid-flight either.
-            pressedWithGaze = gazeIndex != -1
-            gazeIndex = -1
-            // A click still interrupts the next performance, the way the
-            // page's message used to.
-            performanceTimer?.invalidate()
-            schedulePerformance(after: 20)
-            // A real drag needs the press passed on: the cover view hands
-            // it to the window server, which moves the window from now
-            // on. Only the benchmark's handless drag is kept from AppKit
-            // and moved by the timer instead.
-            swallowingMouse = syntheticMover
-            return syntheticMover ? nil : event
-        case .leftMouseUp:
-            let swallow = swallowingMouse
-            swallowingMouse = false
-            finishDrag()
-            return swallow ? nil : event
-        case .leftMouseDragged:
-            // In the benchmark's handless drag the helper still moves the
-            // window; a real drag is the window server's, and AppKit keeps
-            // those events to itself anyway.
-            if syntheticMover {
-                followCursor()
-                return swallowingMouse ? nil : event
-            }
-            return event
-        default:
-            return event
-        }
-    }
-
-    /// Whether the pet was mid-gaze when the press happened -- the gaze was
-    /// then dropped silently (no request could be spared at the press), so
-    /// the page may still be showing that stale frame once the drag ends.
-    private var pressedWithGaze = false
-
-    /// Ask the page for the click reaction without handing it the event.
-    private func reactInPage() {
-        webView.evaluateJavaScript("window.DSHPet && window.DSHPet.react()") { _, _ in }
-    }
-
-    /// Keep the pet's gaze on the cursor.
-    ///
-    /// The gaze used to be driven by the page's pointer events, and that
-    /// only works when the helper happens to be the frontmost app: macOS
-    /// sends mouse-moved events to the active application, and a pet
-    /// floating over somebody's desktop is not it. The helper knows where
-    /// the cursor is at all times, so it tells the page instead -- and the
-    /// pet looks at the cursor without the delay of a round trip through
-    /// the web view.
-    private func watchGaze() {
-        let rate = panel.screen?.maximumFramesPerSecond ?? 60
-        let timer = Timer(timeInterval: 1.0 / Double(max(1, rate)), repeats: true) { [weak self] _ in
-            self?.updateGaze()
-        }
-        // Common mode, so the gaze keeps up while AppKit is tracking the
-        // mouse.
-        RunLoop.main.add(timer, forMode: .common)
-        gazeTimer = timer
+        player.tick(delta: delta)
     }
 
     /// Point the pet at the cursor, if the cursor is close enough.
-    private func updateGaze() {
-        guard let panel else { return }
-        let mouse = cursor
-        let inside = panel.frame.contains(mouse)
-        if inside != pointerInsidePanel {
-            pointerInsidePanel = inside
-        }
-        // A drag already has the pet's attention.
-        if drag.isDragging { return }
-        // The web view counts from the top left, the screen from the
-        // bottom left.
-        let clientX = mouse.x - panel.frame.origin.x
-        let clientY = panel.frame.height - (mouse.y - panel.frame.origin.y)
-        let dx = clientX - size / 2
-        // The pet's eyes sit a little above the middle of the cell.
-        let dy = clientY - size * 0.42
-        if hypot(dx, dy) > size * 1.4 {
-            dropGaze()
-            return
-        }
-        // 0 degrees points straight up; the angle grows clockwise.
-        let degrees = atan2(dx, -dy) * 180 / .pi
-        let index = ((Int((degrees / 22.5).rounded()) % 16) + 16) % 16
-        guard index != gazeIndex else { return }
-        gazeIndex = index
-        webView.evaluateJavaScript(
-            "window.DSHPet && window.DSHPet.look(\(clientX), \(clientY))"
-        ) { _, _ in }
-    }
-
-    /// Stop looking at the cursor.
-    private func dropGaze() {
-        guard gazeIndex != -1 else { return }
-        gazeIndex = -1
-        lookOutInPage()
-    }
-
-    /// Tell the page that the cursor is no longer over the pet.
-    private func lookOutInPage() {
-        lookOutCount += 1
-        webView.evaluateJavaScript("window.DSHPet && window.DSHPet.lookOut()") { _, _ in }
-    }
-
-    /// The tracking area's owner is told when the cursor enters and leaves.
-    override func mouseEntered(with event: NSEvent) {
-        pointerInsidePanel = true
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        pointerInsidePanel = false
-        // Forget the direction as well, so the gaze comes back when the
-        // cursor comes back.
-        dropGaze()
-    }
-
-    private func loadPet() {
-        // The benchmark can leave the page empty, to find out how much of a
-        // drag is the web view's doing and how much is the window's.
-        if benchProfile.contains("noweb") { return }
-        loadSpritePet(base: URL(fileURLWithPath: petDir))
-    }
-    /// Load the shared player page and hand it the pet's manifest.
     ///
-    /// The page has to be loaded as a real file rather than from a string:
-    /// a page created with `loadHTMLString` has an opaque origin, and WebKit
-    /// refuses to pull file:// resources (the sprite atlas) into one -- every
-    /// load fails and the pet stays blank. Loading the file directly gives
-    /// the page a file:// origin, and `allowingReadAccessTo` opens the pet's
-    /// own directory to it.
-    private func loadSpritePet(base: URL) {
-        let playerPage = runtimeDirectory().appendingPathComponent("player.html")
-        guard FileManager.default.fileExists(atPath: playerPage.path) else {
-            NSLog("dsh-pet: cannot read the sprite player at \(playerPage.path)")
-            NSApp.terminate(nil)
+    /// The helper reads the cursor itself: a floating pet is never the
+    /// frontmost app, and macOS only sends mouse-moved events to that one.
+    private func updateGaze() {
+        guard !drag.isDragging else { return }
+        let mouse = NSEvent.mouseLocation
+        let frame = panel.frame
+        // Measured from the pet's eyes, a little above the middle, in a
+        // top-left space.
+        let dx = (mouse.x - frame.minX) - size / 2
+        let dy = (frame.height - (mouse.y - frame.minY)) - size * 0.42
+        guard hypot(dx, dy) <= size * 1.4 else {
+            player.lookOut()
             return
         }
-        webView.loadFileURL(playerPage, allowingReadAccessTo: commonAncestor(
-            playerPage.deletingLastPathComponent(), base))
+        player.look(degrees: atan2(dx, -dy) * 180 / .pi)
     }
 
-    /// The nearest directory that contains both paths. WebKit only grants
-    /// read access to a directory URL that ends in "/".
-    private func commonAncestor(_ left: URL, _ right: URL) -> URL {
-        var a = left.pathComponents
-        var b = right.pathComponents
-        var shared: [String] = []
-        while !a.isEmpty, !b.isEmpty, a.first == b.first {
-            shared.append(a.removeFirst())
-            b.removeFirst()
+    // -- drag --------------------------------------------------------------
+
+    /**
+     * Start a drag.
+     *
+     * A real drag is handed to the window server with `performDrag(with:)`,
+     * the machinery a title-bar drag uses: the server moves the window with
+     * the cursor itself. The helper must not move the window on its own --
+     * every `setFrameOrigin` is a round trip to the window server, and a
+     * busy server (a 5K display at 120Hz is enough) holds the main thread
+     * for up to 60ms per move, which is exactly the lag a person sees.
+     *
+     * Without an event (the benchmark) the helper moves the window itself,
+     * so that path can still be measured.
+     */
+    func beginDrag(with event: NSEvent? = nil) {
+        let now = CACurrentMediaTime()
+        drag.begin(at: cursor, origin: panel.frame.origin)
+        dragActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .latencyCritical],
+            reason: "dragging the pet"
+        )
+        pressTime = now
+        firstMoveTime = 0
+        lastMoveTime = 0
+        worstMoveGap = 0
+        windowMoves = 0
+        maxTrail = 0
+        moveCost = 0
+        lastSidewaysMove = 0
+        player.interrupt()
+        // A click puts the next show off.
+        schedulePerformance(after: 20)
+        startWatchdog()
+        guard let event else { return }
+        serverDrag = true
+        lastSeenOrigin = panel.frame.origin
+        // The release may never reach the view once the server owns the
+        // drag, so the button is watched instead.
+        let release = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            if NSEvent.pressedMouseButtons & 1 == 0 { self.endDrag() }
         }
-        // The first component is already "/", so drop it before joining.
-        let path = "/" + shared.dropFirst().joined(separator: "/")
-        return URL(fileURLWithPath: path, isDirectory: true)
+        RunLoop.main.add(release, forMode: .common)
+        releaseTimer = release
+        panel.performDrag(with: event)
+        if NSEvent.pressedMouseButtons & 1 == 0 { endDrag() }
     }
 
-    private func runtimeDirectory() -> URL {
-        URL(fileURLWithPath: runtimePath).deletingLastPathComponent()
-    }
-
-    /// Start test hooks only after the HTML has actually loaded; otherwise
-    /// `evaluateJavaScript` can run before the pet functions exist.
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        if selfTest {
-            selfTest = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-                self?.webView.evaluateJavaScript(
-                    "window.__petSelfTest && window.__petSelfTest()",
-                    completionHandler: nil
-                )
-            }
+    /// The window server moved the window during a drag.
+    @objc private func windowDidMove(_ notification: Notification) {
+        guard drag.isDragging, serverDrag else { return }
+        let now = CACurrentMediaTime()
+        let origin = panel.frame.origin
+        drag.noteMoved(mouse: cursor)
+        if firstMoveTime == 0 { firstMoveTime = now }
+        if lastMoveTime > 0 { worstMoveGap = max(worstMoveGap, (now - lastMoveTime) * 1000) }
+        lastMoveTime = now
+        windowMoves += 1
+        maxTrail = max(maxTrail, hypot(origin.x - lastSeenOrigin.x, origin.y - lastSeenOrigin.y))
+        if abs(origin.x - lastSeenOrigin.x) >= 1 {
+            lastSidewaysMove = now
+            player.setDragDirection(right: origin.x > lastSeenOrigin.x)
         }
-        if performNow {
-            performNow = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-                self?.startPerformance()
-            }
+        lastSeenOrigin = origin
+    }
+
+    func continueDrag() {
+        guard drag.isDragging, !serverDrag else { return }
+        let mouse = cursor
+        drag.noteMoved(mouse: mouse)
+        let origin = panel.frame.origin
+        let target = drag.windowOrigin(for: mouse)
+        guard target != origin else { return }
+
+        let started = CACurrentMediaTime()
+        panel.setFrameOrigin(target)
+        let now = CACurrentMediaTime()
+        moveCost += now - started
+        maxTrail = max(maxTrail, hypot(target.x - origin.x, target.y - origin.y))
+        if firstMoveTime == 0 { firstMoveTime = now }
+        if lastMoveTime > 0 { worstMoveGap = max(worstMoveGap, (now - lastMoveTime) * 1000) }
+        lastMoveTime = now
+        windowMoves += 1
+
+        if drag.moved, abs(target.x - origin.x) >= 1 {
+            lastSidewaysMove = now
+            player.setDragDirection(right: target.x > origin.x)
+        }
+    }
+
+    func endDrag() {
+        guard drag.isDragging else { return }
+        continueDrag()
+        drag.noteMoved(mouse: cursor)
+        drag.end()
+        releaseTimer?.invalidate()
+        releaseTimer = nil
+        let byServer = serverDrag
+        serverDrag = false
+        stopWatchdog()
+        if let dragActivity { ProcessInfo.processInfo.endActivity(dragActivity) }
+        dragActivity = nil
+        if drag.moved {
+            saveOrigin()
+            player.endDrag()
         } else {
-            schedulePerformance()
+            activateDSH()
+            player.react()
         }
-        if diagnose {
-            DispatchQueue.main.asyncAfter(deadline: .now() + diagnoseAfter / 1000.0) { [weak self] in
-                self?.reportDiagnostics()
-            }
+        writeDragLog(byServer: byServer)
+    }
+
+    /// A 4ms heartbeat while dragging: the longest gap between two beats is
+    /// the longest the main thread was held, which is what a person feels.
+    private func startWatchdog() {
+        lastBeat = CACurrentMediaTime()
+        worstBlock = 0
+        let timer = Timer(timeInterval: 0.004, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let now = CACurrentMediaTime()
+            self.worstBlock = max(self.worstBlock, (now - self.lastBeat) * 1000)
+            self.lastBeat = now
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        watchdog = timer
+    }
+
+    private func stopWatchdog() {
+        watchdog?.invalidate()
+        watchdog = nil
+    }
+
+    private func rounded(_ value: Double) -> Double { (value * 10).rounded() / 10 }
+
+    /// Write a line about the drag, so "does it follow?" has numbers.
+    private func writeDragLog(byServer: Bool) {
+        guard !dragLogPath.isEmpty else { return }
+        let first = firstMoveTime == 0 ? 0 : (firstMoveTime - pressTime) * 1000
+        let object: [String: Any] = [
+            "at": Date().timeIntervalSince1970,
+            "mover": byServer ? "window-server" : "helper",
+            "moved": drag.moved,
+            "moves": windowMoves,
+            "dragMs": rounded((CACurrentMediaTime() - pressTime) * 1000),
+            "pressToFirstMoveMs": rounded(first),
+            "maxTrailPx": rounded(maxTrail),
+            "worstMoveGapMs": rounded(worstMoveGap),
+            "worstMainBlockMs": rounded(worstBlock),
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return }
+        var line = data
+        line.append(0x0A)
+        let manager = FileManager.default
+        // A note of the last few drags, not a history of every drag ever.
+        if let attributes = try? manager.attributesOfItem(atPath: dragLogPath),
+           let bytes = attributes[.size] as? Int, bytes > 32_768 {
+            try? manager.removeItem(atPath: dragLogPath)
+        }
+        // FileHandle(forWritingTo:) will not create the file.
+        if !manager.fileExists(atPath: dragLogPath) {
+            manager.createFile(atPath: dragLogPath, contents: nil)
+        }
+        if let handle = FileHandle(forWritingAtPath: dragLogPath) {
+            handle.seekToEndOfFile()
+            handle.write(line)
+            try? handle.close()
         }
     }
 
-    /// Print what the page saw, then quit. Used by `--diagnose`.
-    private func reportDiagnostics() {
-        webView.evaluateJavaScript("JSON.stringify(window.__dshDiag || null)") { result, error in
-            let text = (result as? String) ?? "nil"
-            FileHandle.standardError.write("diag: \(text)\n".data(using: .utf8)!)
-            let mouse = NSEvent.mouseLocation
-            let summary = "diag native: pointerInside=\(self.pointerInsidePanel) "
-                + "lookOuts=\(self.lookOutCount) "
-                + "mouse=\(Int(mouse.x)),\(Int(mouse.y)) "
-                + "panel=\(Int(self.panel.frame.origin.x)),\(Int(self.panel.frame.origin.y))"
-            FileHandle.standardError.write((summary + "\n").data(using: .utf8)!)
-            if let error {
-                FileHandle.standardError.write("diag error: \(error)\n".data(using: .utf8)!)
-            }
-            NSApp.terminate(nil)
+    // -- performance -------------------------------------------------------
+
+    private func schedulePerformance(after delay: TimeInterval? = nil) {
+        performanceTimer?.invalidate()
+        let wait = delay ?? Double.random(in: 18...30)
+        performanceTimer = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
+            self?.startPerformance()
         }
+    }
+
+    private func startPerformance() {
+        // Don't start a show under the cursor or in the hand.
+        if drag.isDragging || panel.frame.contains(NSEvent.mouseLocation) {
+            schedulePerformance(after: 6)
+            return
+        }
+        let seconds = max(0.5, min(15.0, player.perform() / 1000))
+        schedulePerformance(after: seconds + Double.random(in: 18...30))
+    }
+
+    // -- host --------------------------------------------------------------
+
+    private func activateDSH() {
+        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.deepseek.dsh").first {
+            app.unhide()
+            app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+            return
+        }
+        NSWorkspace.shared.openApplication(
+            at: URL(fileURLWithPath: "/Applications/DeepSeek Harness.app"),
+            configuration: NSWorkspace.OpenConfiguration(),
+            completionHandler: nil
+        )
     }
 
     private func watchParent() {
@@ -790,12 +1014,15 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
     private func initialOrigin() -> NSPoint {
         if !statePath.isEmpty,
            let data = try? Data(contentsOf: URL(fileURLWithPath: statePath)),
-           let raw = try? JSONSerialization.jsonObject(with: data),
-           let object = raw as? [String: Any],
-           let x = (object["x"] as? NSNumber)?.doubleValue,
-           let y = (object["y"] as? NSNumber)?.doubleValue {
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let x = number(object["x"]),
+           let y = number(object["y"]) {
             return clampToScreen(NSPoint(x: x, y: y))
         }
+        return defaultOrigin()
+    }
+
+    private func defaultOrigin() -> NSPoint {
         let frame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         return NSPoint(x: frame.maxX - size - 24, y: frame.minY + 200)
     }
@@ -805,8 +1032,7 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
         if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(rect) }) {
             return point
         }
-        let frame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        return NSPoint(x: frame.maxX - size - 24, y: frame.minY + 200)
+        return defaultOrigin()
     }
 
     private func saveOrigin() {
@@ -817,575 +1043,41 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
         try? data.write(to: URL(fileURLWithPath: statePath), options: .atomic)
     }
 
+    // -- benchmark ---------------------------------------------------------
 
-    /// Ask the loaded pet to perform. The pet owns the visuals and returns
-    /// its duration in milliseconds; the shell only schedules the next show.
-    private func schedulePerformance(after delay: TimeInterval? = nil) {
-        performanceTimer?.invalidate()
-        let wait = delay ?? Double.random(in: 18...30)
-        performanceTimer = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
-            self?.startPerformance()
-        }
-    }
-
-    private func startPerformance() {
-        guard panel != nil else {
-            schedulePerformance(after: 8)
-            return
-        }
-        // Don't start a show under the cursor.
-        if panel.frame.contains(NSEvent.mouseLocation) {
-            schedulePerformance(after: 6)
-            return
-        }
-        webView.evaluateJavaScript("window.DSHPet && window.DSHPet.perform()") { [weak self] result, _ in
-            let milliseconds = (result as? NSNumber)?.doubleValue ?? 3000
-            let seconds = max(0.5, min(15.0, milliseconds / 1000.0))
-            self?.schedulePerformance(after: seconds + Double.random(in: 18...30))
-        }
-    }
-
-    private func activateDSH() {
-        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.deepseek.dsh").first {
-            app.unhide()
-            app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
-            return
-        }
-        let url = URL(fileURLWithPath: "/Applications/DeepSeek Harness.app")
-        NSWorkspace.shared.openApplication(
-            at: url,
-            configuration: NSWorkspace.OpenConfiguration(),
-            completionHandler: nil
-        )
-    }
-
-    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.name == "pet",
-              let body = message.body as? [String: Any],
-              let type = body["type"] as? String else { return }
-
-        switch type {
-        case "down":
-            performanceTimer?.invalidate()
-            schedulePerformance(after: 20)
-            // The press reached the event monitor before it reached the
-            // page, so the drag is already running and it started at the
-            // place the press happened. Starting it again from here would
-            // move the pet by however far the cursor travelled while the
-            // press was on its way through the web view.
-            if !drag.isDragging {
-                startMouse = cursor
-                startOrigin = panel.frame.origin
-                drag.begin(at: startMouse, origin: startOrigin)
-                windowMoves = 0
-                dragRequests = 0
-                startFollowTimer()
-            }
-        case "move":
-            // The page used to send a move for every pointer event, and the
-            // window used to be moved for every one of them. The pet now
-            // follows the cursor by itself, so there is nothing to do.
-            break
-        case "ready":
-            // The pet has arrived; the gaze has to be sent again.
-            gazeIndex = -1
-        case "up":
-            finishDrag()
-        default:
-            break
-        }
-    }
-
-    /// Follow the cursor, once per frame, for as long as the button is down.
-    ///
-    /// The button state is read from the system rather than taken from the
-    /// page, because the page cannot tell us when the drag ends once the
-    /// cursor has left the pet.
-    private func followCursor() {
-        guard drag.isDragging else { return }
-        tickStamps.append(CFAbsoluteTimeGetCurrent())
-        if !buttonDown {
-            finishDrag()
-            return
-        }
-        let current = cursor
-        drag.noteMoved(mouse: current)
-        let target = drag.windowOrigin(for: current)
-        if !syntheticMover {
-            // Watch mode: the window server is carrying the drag, and
-            // nothing here can help or hinder it. All that is left is to
-            // write down how far behind the cursor the window is.
-            let origin = panel.frame.origin
-            let trail = hypot(target.x - origin.x, target.y - origin.y)
-            maxTrail = max(maxTrail, trail)
-            if origin != startOrigin {
-                if firstMoveTime == 0 {
-                    firstMoveTime = CFAbsoluteTimeGetCurrent()
-                }
-                if origin != lastSeenOrigin {
-                    lastSeenOrigin = origin
-                    windowMoves += 1
-                    moveStamps.append(CFAbsoluteTimeGetCurrent())
-                }
-            }
-            return
-        }
-        if target == panel.frame.origin { return }
-        moveAttempts += 1
-        // How far the pet is behind the cursor right now. This is the
-        // distance a person sees the pet trailing, so it is worth
-        // keeping the worst one of the drag.
-        let trail = hypot(target.x - panel.frame.origin.x,
-                          target.y - panel.frame.origin.y)
-        maxTrail = max(maxTrail, trail)
-        if firstMoveTime == 0 {
-            firstMoveTime = CFAbsoluteTimeGetCurrent()
-        }
-        let started = CFAbsoluteTimeGetCurrent()
-        if !benchProfile.contains("nomove") {
-            panel.setFrameOrigin(target)
-        }
-        moveCost += CFAbsoluteTimeGetCurrent() - started
-        windowMoves += 1
-        moveStamps.append(CFAbsoluteTimeGetCurrent())
-        if measureLag, !benchProfile.contains("noprobe") {
-            // Reading the window list is expensive, so it is sampled rather
-            // than done every frame.
-            frameCounter += 1
-            if frameCounter % 4 == 0 {
-                let probeStarted = CFAbsoluteTimeGetCurrent()
-                let painted = paintedOrigin()
-                probeCost += CFAbsoluteTimeGetCurrent() - probeStarted
-                probeCount += 1
-                if let painted {
-                    maxDragLag = max(maxDragLag, hypot(painted.x - target.x,
-                                                        painted.y - target.y))
-                }
-            }
-        }
-    }
-
-    /// The drag is over: either the button was released or the page said so.
-    private func finishDrag() {
-        guard drag.isDragging else { return }
-        drag.end()
-        stopFollowTimer()
-        if drag.moved {
-            saveOrigin()
-        } else {
-            activateDSH()
-            // Only a no-move press was a click, and the click's reaction
-            // belongs here: asking at the press itself woke the web
-            // process at the worst possible moment, and asking at every
-            // press made the jump's compositing contend with the very
-            // drags that had just started.
-            reactInPage()
-        }
-        writeDragLog()
-        // If the press silenced a live gaze without telling the page, that
-        // stale frame is still on the pet; one request now -- after the
-        // drag, when a moment of latency costs nothing -- clears it.
-        if pressedWithGaze {
-            pressedWithGaze = false
-            lookOutInPage()
-        }
-        // The pet looks at the cursor again once the drag is over.
-        gazeIndex = -1
-    }
-
-    /// Write down what the drag actually did.
-    ///
-    /// The pet is supposed to be under the cursor the whole time, and the
-    /// only honest way to know whether it was is to let somebody drag it
-    /// and read the numbers afterwards: how long the pet took to start
-    /// following, and how far behind the cursor it ever was.
-    private func writeDragLog() {
-        guard !dragLogPath.isEmpty else { return }
-        let first = firstMoveTime == 0 ? 0 : (firstMoveTime - pressTime) * 1000
-        // How far apart two window moves ever were: a stall in the middle
-        // of the drag shows up here even when the trail alone does not say
-        // whether the pet froze at the press or halfway through.
-        var worstGap = 0.0
-        for index in 1..<max(1, moveStamps.count) {
-            worstGap = max(worstGap, (moveStamps[index] - moveStamps[index - 1]) * 1000)
-        }
-        // The whole press-to-release span, which is the one length both drag
-        // modes can measure: a native, window-server drag runs inside
-        // AppKit's own session and this process never sees its events.
-        let last = max(0, (CFAbsoluteTimeGetCurrent() - pressTime) * 1000)
-        let object: [String: Any] = [
-            "at": Date().timeIntervalSince1970,
-            "moves": windowMoves,
-            "pressToFirstMoveMs": (first * 10).rounded() / 10,
-            "maxTrailPx": (maxTrail * 10).rounded() / 10,
-            "dragMs": (last * 10).rounded() / 10,
-            "worstMoveGapMs": (worstGap * 10).rounded() / 10,
-            "moved": drag.moved,
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return }
-        var line = data
-        line.append(0x0A)
-        let url = URL(fileURLWithPath: dragLogPath)
-        // `FileHandle(forWritingTo:)` refuses to create the file, and the
-        // very first drag -- the one a fresh install is most likely to be
-        // asked about -- found nothing to write to. Create it once here so
-        // the log can bootstrap itself.
-        if !FileManager.default.fileExists(atPath: dragLogPath) {
-            FileManager.default.createFile(atPath: dragLogPath, contents: nil)
-        }
-        // Keep the log small: it is a note of the last few drags, not a
-        // history of every drag ever.
-        if let attributes = try? FileManager.default.attributesOfItem(atPath: dragLogPath),
-           let size = attributes[.size] as? Int, size > 32_768 {
-            try? FileManager.default.removeItem(at: url)
-        }
-        if let handle = try? FileHandle(forWritingTo: url) {
-            handle.seekToEndOfFile()
-            handle.write(line)
-            try? handle.close()
-        }
-    }
-
-    /// Follow the cursor at the refresh rate of the display.
-    ///
-    /// The rate is the refresh rate of the display the pet is on, so a
-    /// ProMotion screen is not held back to 60.
-    private func startFollowTimer() {
-        guard followTimer == nil else { return }
-        let rate = panel.screen?.maximumFramesPerSecond ?? 60
-        let timer = Timer(timeInterval: 1.0 / Double(max(1, rate)), repeats: true) {
-            [weak self] _ in
-            self?.followCursor()
-        }
-        // Common mode, so the timer keeps firing while AppKit is tracking
-        // the mouse.
-        RunLoop.main.add(timer, forMode: .common)
-        followTimer = timer
-    }
-
-    private func stopFollowTimer() {
-        followTimer?.invalidate()
-        followTimer = nil
-    }
-
-    /// How well the window kept up with a fast drag.
-    ///
-    /// A real drag cannot be timed from here: the cursor belongs to the
-    /// person using the machine, and a synthetic cursor is not trusted
-    /// enough to measure anything the user would feel. So this drives the
-    /// very same code path with a cursor it controls, moving faster than
-    /// any display, and reports what the window did with it.
-    ///
-    /// The interesting number is not how often the window was asked to
-    /// move, but where the window server actually **painted** it: that
-    /// gap between where the window was asked to be and where it ended up
-    /// on the screen is exactly what a person feels as "the pet does not
-    /// follow the cursor".
+    /// Drive the real drag path with a cursor the helper controls: 240 moves
+    /// a second for two seconds, while the pet animates as usual. Synthetic
+    /// system input is dropped on this machine, so the press itself is
+    /// simulated; everything after it is the code a real drag runs.
     private func runDragBenchmark() {
-        syntheticMover = true
         let start = NSPoint(x: 400, y: 400)
-        // The "events" profile posts drag events at the synthetic cursor,
-        // so the panel has to sit under it -- otherwise every event falls
-        // outside the window and the WebView never does the work a real
-        // drag makes it do.
-        if benchProfile.contains("events") {
-            panel.setFrameOrigin(NSPoint(x: start.x - size / 2, y: start.y - size / 2))
-        }
-        let origin = panel.frame.origin
+        panel.setFrameOrigin(NSPoint(x: start.x - size / 2, y: start.y - size / 2))
         cursorOverride = start
-        buttonOverride = true
-        drag.begin(at: start, origin: origin)
-        windowMoves = 0
-        moveAttempts = 0
-        probeCost = 0
-        probeCount = 0
-        dragRequests = 0
-        moveCost = 0
-        maxDragLag = 0
-        moveStamps = []
-        tickStamps = []
-        measureLag = true
-        pressTime = CFAbsoluteTimeGetCurrent()
-        maxTrail = 0
-        firstMoveTime = 0
-        startFollowTimer()
-
-        // 240 requests a second for two seconds: a fast trackpad, and
-        // twice the refresh rate of the display.
-        let total = 480
-        let interval = 1.0 / 240.0
-        // The cursor path runs on its own timer rather than a chain of
-        // delayed blocks: a chain of blocks monopolises the main queue and
-        // would starve the follow timer, which is exactly the jitter this
-        // is trying to measure. The cursor is placed by the clock rather
-        // than by the number of steps, so a late tick still leaves the
-        // cursor in the right place.
-        let began = CFAbsoluteTimeGetCurrent()
-        let speed = 480.0
+        beginDrag()
+        let began = CACurrentMediaTime()
         var path: Timer?
-        path = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+        path = Timer(timeInterval: 1.0 / 240.0, repeats: true) { [weak self] _ in
             guard let self else { return }
-            let elapsed = CFAbsoluteTimeGetCurrent() - began
-            self.cursorOverride = NSPoint(x: start.x + elapsed * speed, y: start.y)
-            self.dragRequests += 1
-            guard elapsed >= Double(total) * interval else { return }
+            let elapsed = CACurrentMediaTime() - began
+            self.cursorOverride = NSPoint(x: start.x + elapsed * 480, y: start.y)
+            self.continueDrag()
+            guard elapsed >= 2 else { return }
             path?.invalidate()
-            self.finishDrag()
-            self.reportDragBenchmark()
+            let block = self.worstBlock
+            self.endDrag()
+            print("drag bench: mover=helper moves=\(self.windowMoves) "
+                  + "moveCostMs=\(Int(self.moveCost * 1000)) "
+                  + "worstMoveGapMs=\(String(format: "%.1f", self.worstMoveGap)) "
+                  + "mainThreadWorstBlockMs=\(String(format: "%.1f", block)) "
+                  + "moved=\(self.drag.moved)")
+            NSApp.terminate(nil)
         }
         if let path { RunLoop.main.add(path, forMode: .common) }
-        // The "events" profile turns the drag into a real one: it posts a
-        // stream of mouse-dragged events into the app, at the rate a real
-        // trackpad delivers them, so the WebView does the per-event work a
-        // real drag makes it do -- on the same main thread as the follow
-        // timer.
-        if benchProfile.contains("events") {
-            var events: Timer?
-            events = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self] _ in
-                guard let self, self.drag.isDragging else { return }
-                self.postTestDragged(at: self.cursorOverride ?? .zero)
-                if !self.drag.isDragging { events?.invalidate() }
-            }
-            if let events { RunLoop.main.add(events, forMode: .common) }
-        }
-        // A heartbeat on the main run loop: if the thread is blocked, this
-        // timer cannot fire either, and the gap between two beats is the
-        // length of the block.
-        var beats = 0
-        var last = CFAbsoluteTimeGetCurrent()
-        var worst = 0.0
-        let heartbeat = Timer(timeInterval: 0.001, repeats: true) { _ in
-            let now = CFAbsoluteTimeGetCurrent()
-            worst = max(worst, (now - last) * 1000)
-            last = now
-            beats += 1
-        }
-        RunLoop.main.add(heartbeat, forMode: .common)
-        heartbeatGaps = { worst }
-        heartbeatCount = { beats }
-    }
-
-    /// Post a press at the cursor, so the drag can be exercised without a
-    /// real mouse.
-    ///
-    /// Synthetic mouse *events* are dropped by the system on this machine,
-    /// but an event posted straight into the app still reaches the event
-    /// monitor -- which is the part this needs to test.
-    private func postTestPress(at point: NSPoint) {
-        let local = panel.convertPoint(fromScreen: point)
-        guard let event = NSEvent.mouseEvent(
-            with: .leftMouseDown,
-            location: local,
-            modifierFlags: [],
-            timestamp: ProcessInfo.processInfo.systemUptime,
-            windowNumber: Int(panel.windowNumber),
-            context: nil,
-            eventNumber: 0,
-            clickCount: 1,
-            pressure: 1
-        ) else { return }
-        NSApp.postEvent(event, atStart: false)
-    }
-
-    /// Post a drag event at the cursor.
-    ///
-    /// A real drag does not just move the cursor: it streams mouse-dragged
-    /// events into the app, and the WebView does real work for every one of
-    /// them -- hit-testing, pointer capture, drag bookkeeping. The benchmark
-    /// needs that stream to measure what a real drag does to the follow
-    /// timer, because the stream runs on the very same main thread.
-    private func postTestDragged(at point: NSPoint) {
-        let local = panel.convertPoint(fromScreen: point)
-        guard let event = NSEvent.mouseEvent(
-            with: .leftMouseDragged,
-            location: local,
-            modifierFlags: [],
-            timestamp: ProcessInfo.processInfo.systemUptime,
-            windowNumber: Int(panel.windowNumber),
-            context: nil,
-            eventNumber: 0,
-            clickCount: 1,
-            pressure: 1
-        ) else { return }
-        NSApp.postEvent(event, atStart: false)
-    }
-
-    /// Post a release at the cursor.
-    private func postTestRelease(at point: NSPoint) {
-        let local = panel.convertPoint(fromScreen: point)
-        guard let event = NSEvent.mouseEvent(
-            with: .leftMouseUp,
-            location: local,
-            modifierFlags: [],
-            timestamp: ProcessInfo.processInfo.systemUptime,
-            windowNumber: Int(panel.windowNumber),
-            context: nil,
-            eventNumber: 0,
-            clickCount: 1,
-            pressure: 0
-        ) else { return }
-        NSApp.postEvent(event, atStart: false)
-    }
-
-    /// Drive a whole drag the way a person would, and report what the pet
-    /// did.
-    ///
-    /// The press is posted into the app, the cursor is really warped along
-    /// a straight line, and the helper follows it. The interesting number
-    /// is the trail: how far behind the cursor the pet ever was.
-    private func runPressBenchmark() {
-        let origin = panel.frame.origin
-        // Press on the pet itself, the way a person would.
-        let start = NSPoint(x: origin.x + size / 2, y: origin.y + size / 2)
-        pressBenchmarkOrigin = NSEvent.mouseLocation
-        warpCursor(to: start)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            guard let self else { return }
-            // A posted event does not press the real button, so the
-            // helper is told about the button as well.
-            self.buttonOverride = true
-            self.maxTrail = 0
-            self.firstMoveTime = 0
-            self.windowMoves = 0
-            self.moveAttempts = 0
-            // The press and the movement start together: the pet is
-            // expected to be under the cursor from the first frame of the
-            // drag.
-            self.postTestPress(at: start)
-            self.warpPath(from: start, duration: 1.0, speed: 700)
-        }
-    }
-
-    /// Move the real cursor to a point.
-    private func warpCursor(to point: NSPoint) {
-        let union = NSScreen.screens.map(\.frame).reduce(NSRect.null) { $0.union($1) }
-        let height = union.maxY - union.minY
-        CGWarpMouseCursorPosition(CGPoint(x: point.x, y: height - (point.y - union.minY)))
-    }
-
-    /// Drag the real cursor along a straight line.
-    private func warpPath(from start: NSPoint, duration: Double, speed: Double) {
-        let began = CFAbsoluteTimeGetCurrent()
-        var timer: Timer?
-        timer = Timer(timeInterval: 1.0 / 240.0, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            let elapsed = CFAbsoluteTimeGetCurrent() - began
-            self.warpCursor(to: NSPoint(x: start.x + elapsed * speed, y: start.y))
-            guard elapsed >= duration else { return }
-            timer?.invalidate()
-            let end = NSPoint(x: start.x + duration * speed, y: start.y)
-            self.postTestRelease(at: end)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                self.reportPressBenchmark()
-            }
-        }
-        if let timer { RunLoop.main.add(timer, forMode: .common) }
-    }
-
-    /// Print what the drag benchmark measured.
-    private func reportPressBenchmark() {
-        let mouse = cursor
-        let grab = drag.grabOffset
-        let trail = hypot(mouse.x - panel.frame.origin.x - grab.x,
-                          mouse.y - panel.frame.origin.y - grab.y)
-        let first = firstMoveTime == 0 ? 0 : (firstMoveTime - pressTime) * 1000
-        print("press bench: moves=\(windowMoves) attempts=\(moveAttempts) "
-              + "pressToFirstMoveMs=\(String(format: "%.1f", first)) "
-              + "maxTrailPx=\(String(format: "%.1f", maxTrail)) "
-              + "finalTrailPx=\(String(format: "%.1f", trail)) "
-              + "moved=\(drag.moved)")
-        warpCursor(to: pressBenchmarkOrigin)
-        buttonOverride = nil
-        NSApp.terminate(nil)
-    }
-
-    /// Print what the drag benchmark measured.
-    private func reportDragBenchmark() {
-        let target = drag.windowOrigin(for: cursor)
-        let painted = benchProfile.contains("noprobe") ? nil : paintedOrigin()
-        let lag = painted.map { hypot($0.x - target.x, $0.y - target.y) }
-            ?? hypot(target.x - panel.frame.origin.x, target.y - panel.frame.origin.y)
-        var gaps: [Double] = []
-        for index in 1..<max(1, moveStamps.count) {
-            gaps.append((moveStamps[index] - moveStamps[index - 1]) * 1000)
-        }
-        let over20 = gaps.filter { $0 > 20 }.count
-        let over50 = gaps.filter { $0 > 50 }.count
-        let head = gaps.prefix(6).map { String(format: "%.1f", $0) }.joined(separator: ",")
-        var tickGaps: [Double] = []
-        for index in 1..<max(1, tickStamps.count) {
-            tickGaps.append((tickStamps[index] - tickStamps[index - 1]) * 1000)
-        }
-        tickGaps.sort()
-        let tickMedian = tickGaps.isEmpty ? 0 : tickGaps[tickGaps.count / 2]
-        let tickWorst = tickGaps.last ?? 0
-        let tickOver20 = tickGaps.filter { $0 > 20 }.count
-        gaps.sort()
-        let median = gaps.isEmpty ? 0 : gaps[gaps.count / 2]
-        let worst = gaps.last ?? 0
-        let spread = gaps.isEmpty ? 0 : (gaps.last! - gaps.first!)
-        print("drag bench: requests=\(dragRequests) "
-              + "windowMoves=\(windowMoves) moveAttempts=\(moveAttempts) "
-              + "moveCostMs=\(Int(moveCost * 1000)) "
-              + "probeCostMs=\(Int(probeCost * 1000)) probes=\(probeCount) "
-              + "maxPaintedLagPx=\(Int(maxDragLag)) "
-              + "finalPaintedLagPx=\(Int(lag)) "
-              + "moveGapMedianMs=\(String(format: "%.2f", median)) "
-              + "moveGapWorstMs=\(String(format: "%.2f", worst)) "
-              + "moveGapSpreadMs=\(String(format: "%.2f", spread)) "
-              + "gapsOver20ms=\(over20) gapsOver50ms=\(over50) "
-              + "firstGaps=\(head) "
-              + "mainThreadWorstBlockMs=\(String(format: "%.1f", heartbeatGaps())) "
-              + "heartbeats=\(heartbeatCount()) "
-              + "tickMedianMs=\(String(format: "%.2f", tickMedian)) "
-              + "tickWorstMs=\(String(format: "%.2f", tickWorst)) "
-              + "tickOver20ms=\(tickOver20)")
-        drag.end()
-        stopFollowTimer()
-        cursorOverride = nil
-        buttonOverride = nil
-        NSApp.terminate(nil)
-    }
-
-    /// Where the window is actually painted, as the window server sees it.
-    ///
-    /// `panel.frame` is where the window was asked to be. The window server
-    /// paints it a frame or so later, and that gap is what a person feels.
-    private func paintedOrigin() -> NSPoint? {
-        let number = panel.windowNumber
-        guard number > 0,
-              let list = CGWindowListCopyWindowInfo([.optionIncludingWindow],
-                                                    CGWindowID(number)) as? [[String: Any]],
-              let info = list.first,
-              let bounds = info[kCGWindowBounds as String] as? [String: Any],
-              let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary),
-              let screen = panel.screen else { return nil }
-        // The window server reports the top-left corner of a top-left
-        // space; AppKit wants the bottom-left one.
-        return NSPoint(x: rect.origin.x,
-                       y: screen.frame.maxY - rect.origin.y - rect.height)
     }
 }
 
 signal(SIGTERM) { _ in exit(0) }
 signal(SIGINT) { _ in exit(0) }
-
-/// The invisible view that turns a press on the pet into a native window
-/// drag.
-///
-/// `hitTest` claims every point, so the WebView never hears about a press
-/// at all, and `mouseDownCanMoveWindow` is what makes AppKit hand the drag
-/// to the window server. The page's own pointer events have been unused
-/// since the gaze, the click reaction and the follow all went native.
-final class PetCoverView: NSView {
-    /// The old press benchmark needs the page to hear the press again, so
-    /// the cover can be told to stand aside.
-    var eatsEvents = true
-    override func hitTest(_ point: NSPoint) -> NSView? { eatsEvents ? self : nil }
-    override var mouseDownCanMoveWindow: Bool { true }
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-    override var acceptsFirstResponder: Bool { false }
-}
 
 let application = NSApplication.shared
 let controller = PetController()
