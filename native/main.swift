@@ -628,6 +628,7 @@ final class PetController: NSObject, NSApplicationDelegate {
     private var serverDrag = false
     private var releaseTimer: Timer?
     private var lastSeenOrigin = NSPoint.zero
+    private var lastCursor = NSPoint.zero
 
     // What a drag did, for the drag log.
     private var pressTime: CFTimeInterval = 0
@@ -833,16 +834,38 @@ final class PetController: NSObject, NSApplicationDelegate {
         guard let event else { return }
         serverDrag = true
         lastSeenOrigin = panel.frame.origin
+        lastCursor = cursor
         // The release may never reach the view once the server owns the
         // drag, so the button is watched instead.
         let release = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            if NSEvent.pressedMouseButtons & 1 == 0 { self.endDrag() }
+            self?.watchServerDrag()
         }
         RunLoop.main.add(release, forMode: .common)
         releaseTimer = release
         panel.performDrag(with: event)
         if NSEvent.pressedMouseButtons & 1 == 0 { endDrag() }
+    }
+
+    /// Follow the cursor while the window server carries the drag.
+    ///
+    /// The way the pet runs comes from the cursor, not from the window:
+    /// the move notifications arrive a few times a second at best, too few
+    /// to tell left from right.
+    private func watchServerDrag() {
+        guard drag.isDragging, serverDrag else { return }
+        if NSEvent.pressedMouseButtons & 1 == 0 {
+            endDrag()
+            return
+        }
+        let mouse = cursor
+        drag.noteMoved(mouse: mouse)
+        let dx = mouse.x - lastCursor.x
+        lastCursor = mouse
+        // 2pt a tick (120pt/s) keeps a mostly vertical drag from flipping
+        // the pet on every wobble.
+        guard drag.moved, abs(dx) >= 2 else { return }
+        lastSidewaysMove = CACurrentMediaTime()
+        player.setDragDirection(right: dx > 0)
     }
 
     /// The window server moved the window during a drag.
@@ -856,10 +879,6 @@ final class PetController: NSObject, NSApplicationDelegate {
         lastMoveTime = now
         windowMoves += 1
         maxTrail = max(maxTrail, hypot(origin.x - lastSeenOrigin.x, origin.y - lastSeenOrigin.y))
-        if abs(origin.x - lastSeenOrigin.x) >= 1 {
-            lastSidewaysMove = now
-            player.setDragDirection(right: origin.x > lastSeenOrigin.x)
-        }
         lastSeenOrigin = origin
     }
 
