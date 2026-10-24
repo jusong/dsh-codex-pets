@@ -495,47 +495,78 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
         mouseMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown, .leftMouseUp, .leftMouseDragged]
         ) { [weak self] event in
-            self?.handleMouseEvent(event)
-            return event
+            self?.handleMouseEvent(event) ?? event
         }
     }
 
+    /// Whether the press that began the current interaction was kept from
+    /// the WebView -- and so its release and its drag events must be kept
+    /// from it too.
+    private var swallowingMouse = false
+
     /// React to the mouse before the page gets the chance to.
-    private func handleMouseEvent(_ event: NSEvent) {
+    ///
+    /// The drag events are swallowed on purpose: every one of them used to
+    /// reach the WebView, and the press especially made WebKit hold the
+    /// main thread for ~50ms -- the time to ask the sleeping web process
+    /// what the page meant to do with the click. The pet froze under the
+    /// cursor at exactly the moment the hand started moving, which is the
+    /// lag the drag log kept recording. The page now hears nothing: the
+    /// window is moved natively and the click's reaction is asked for
+    /// through an asynchronous request, so nothing in WebKit can stand
+    /// between the cursor and the window.
+    private func handleMouseEvent(_ event: NSEvent) -> NSEvent? {
         switch event.type {
         case .leftMouseDown:
             let point = panel.convertPoint(toScreen: event.locationInWindow)
             // Only a press on the pet itself starts a drag.
-            guard panel.frame.contains(point) else { return }
+            guard panel.frame.contains(point) else { return event }
             pressTime = CFAbsoluteTimeGetCurrent()
             maxTrail = 0
             firstMoveTime = 0
             windowMoves = 0
             moveAttempts = 0
+            moveStamps = []
+            tickStamps = []
             // The benchmark can put the drag back on the old path, where
             // the page reported the press, to see what that costs.
-            guard !benchProfile.contains("oldpress") else { return }
+            guard !benchProfile.contains("oldpress") else { return event }
             drag.begin(at: point, origin: panel.frame.origin)
             startFollowTimer()
             // The page drops the gaze when the pet reacts to a click, so
             // the helper forgets the direction too and puts it back when
             // the reaction is over.
             dropGaze()
+            // A click used to interrupt the next performance through the
+            // page's message; the press no longer reaches the page, so the
+            // helper has to do it here.
+            performanceTimer?.invalidate()
+            schedulePerformance(after: 20)
+            // The pet still answers the click with its reaction animation,
+            // through a request that cannot hold the main thread.
+            reactInPage()
+            swallowingMouse = true
+            return nil
         case .leftMouseUp:
+            let swallow = swallowingMouse
+            swallowingMouse = false
             finishDrag()
+            return swallow ? nil : event
         case .leftMouseDragged:
-            // Move the window the moment the drag event arrives, the way
-            // native window dragging does: the follow timer alone polls the
-            // cursor at the refresh rate, and a busy main run loop -- the
-            // WebView does real work for every one of these events -- can
-            // hold a tick back until the pet visibly trails the cursor.
-            // Catching up inside the event itself means the pet follows
-            // whenever the run loop touches the event stream at all, and
-            // the timer stays only as a backstop.
+            // Catch up inside the event itself, the way native window
+            // dragging does: the follow timer polls at the refresh rate,
+            // and a busy main run loop can hold a tick back until the pet
+            // visibly trails the cursor.
             followCursor()
+            return swallowingMouse ? nil : event
         default:
-            break
+            return event
         }
+    }
+
+    /// Ask the page for the click reaction without handing it the event.
+    private func reactInPage() {
+        webView.evaluateJavaScript("window.DSHPet && window.DSHPet.react()") { _, _ in }
     }
 
     /// Keep the pet's gaze on the cursor.
@@ -896,11 +927,21 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
     private func writeDragLog() {
         guard !dragLogPath.isEmpty else { return }
         let first = firstMoveTime == 0 ? 0 : (firstMoveTime - pressTime) * 1000
+        // How far apart two window moves ever were: a stall in the middle
+        // of the drag shows up here even when the trail alone does not say
+        // whether the pet froze at the press or halfway through.
+        var worstGap = 0.0
+        for index in 1..<max(1, moveStamps.count) {
+            worstGap = max(worstGap, (moveStamps[index] - moveStamps[index - 1]) * 1000)
+        }
+        let last = firstMoveTime == 0 ? 0 : (CFAbsoluteTimeGetCurrent() - firstMoveTime) * 1000
         let object: [String: Any] = [
             "at": Date().timeIntervalSince1970,
             "moves": windowMoves,
             "pressToFirstMoveMs": (first * 10).rounded() / 10,
             "maxTrailPx": (maxTrail * 10).rounded() / 10,
+            "dragMs": (last * 10).rounded() / 10,
+            "worstMoveGapMs": (worstGap * 10).rounded() / 10,
             "moved": drag.moved,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: object) else { return }
