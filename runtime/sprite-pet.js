@@ -474,6 +474,19 @@
     }
 
     /**
+     * Look at a point in the page's coordinates.
+     *
+     * The native helper sends the cursor position here, because a pet
+     * floating over the desktop is not the frontmost app and macOS only
+     * hands mouse-moved events to the frontmost one. The page's own
+     * pointer events still work when they arrive -- this is the other
+     * way in, and the one that always works.
+     */
+    lookAt(clientX, clientY) {
+      this.updateLook(clientX, clientY)
+    }
+
+    /**
      * Stop looking at the cursor and go back to the animation.
      *
      * The gaze rows are static frames, so a pet that is looking at the cursor
@@ -644,6 +657,7 @@
           perform: () => pet.perform(),
           interrupt: () => pet.interrupt(),
           lookOut: () => pet.lookOut(),
+          lookAt: (x, y) => pet.lookAt(x, y),
           react: () => pet.react(),
         })
       }

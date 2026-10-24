@@ -13,13 +13,25 @@ import Darwin
 /**
  * The bookkeeping of a drag.
  *
- * The page sends a "move" for every pointer event it gets, and a trackpad
- * produces those far faster than the screen refreshes. So a move is only
- * *requested* here; the window is moved once per display frame by whoever
- * calls `takeWindowOrigin`. That keeps the window server from being asked
- * to re-composite the WebView more often than the screen can show, and
- * because a request is a flag rather than a queue, a slow frame is skipped
- * instead of piling up behind it.
+ * The pet follows the cursor **directly**: every frame the helper reads the
+ * real cursor position and puts the window where it belongs. Two things
+ * used to stand between the cursor and the window:
+ *
+ *   * a WebView stops delivering pointer events as soon as the cursor
+ *     leaves it, and the cursor leaves it the moment the window lags
+ *     behind -- so a lagging pet stopped receiving the very events that
+ *     would have caught it up. The lag fed itself.
+ *   * the press itself used to reach the helper through the page: the
+ *     WebView had to turn it into a pointer event, the page had to turn
+ *     that into a message, and only then did the helper learn where the
+ *     press happened. By then the cursor had already travelled, and the
+ *     pet started the drag from the wrong place -- so it trailed the
+ *     cursor by however far the cursor moved in the meantime, for the
+ *     whole drag.
+ *
+ * The helper now watches the mouse itself, so the drag starts at the
+ * position of the press and the pet keeps following whether or not the
+ * page hears anything.
  */
 struct DragState {
     private(set) var isDragging = false
@@ -27,19 +39,12 @@ struct DragState {
     private(set) var moved = false
     private var startMouse = NSPoint.zero
     private var startOrigin = NSPoint.zero
-    private var pending = false
 
     mutating func begin(at mouse: NSPoint, origin: NSPoint) {
         isDragging = true
         moved = false
-        pending = false
         startMouse = mouse
         startOrigin = origin
-    }
-
-    /// The cursor moved. Nothing is moved yet.
-    mutating func requestMove() {
-        pending = true
     }
 
     /// Where the window belongs, given where the cursor is now.
@@ -48,22 +53,20 @@ struct DragState {
                 y: startOrigin.y + (mouse.y - startMouse.y))
     }
 
-    /// Take the pending request and work out where the window goes.
-    ///
-    /// Returns nil when there is nothing to do, which is what keeps a frame
-    /// that carries no new information from moving the window at all.
-    mutating func takeWindowOrigin(for mouse: NSPoint) -> NSPoint? {
-        guard pending else { return nil }
-        pending = false
+    /// Where on the pet the cursor grabbed it, relative to the window.
+    var grabOffset: NSPoint {
+        NSPoint(x: startMouse.x - startOrigin.x, y: startMouse.y - startOrigin.y)
+    }
+
+    /// Note that the pet has really moved, if it has.
+    mutating func noteMoved(mouse: NSPoint) {
         if abs(mouse.x - startMouse.x) > 3 || abs(mouse.y - startMouse.y) > 3 {
             moved = true
         }
-        return windowOrigin(for: mouse)
     }
 
     mutating func end() {
         isDragging = false
-        pending = false
     }
 }
 
@@ -91,18 +94,75 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
     /// than any display.
     private var cursorOverride: NSPoint?
     private var cursor: NSPoint { cursorOverride ?? NSEvent.mouseLocation }
-    private var dragTimer: Timer?
+    /// Whether the mouse button counts as held down.
+    ///
+    /// The benchmark drives the drag with a cursor it controls, and a
+    /// cursor it controls has no button under it.
+    private var buttonOverride: Bool?
+    private var buttonDown: Bool {
+        buttonOverride ?? (NSEvent.pressedMouseButtons & 1 != 0)
+    }
+    private var followTimer: Timer?
+    /// The mouse monitor that sees the press before the page does.
+    ///
+    /// A mouse-down on the pet reaches the WebView and the page before it
+    /// reaches the helper over the message bridge. Watching the event
+    /// here means the drag starts at the exact spot of the press.
+    private var mouseMonitor: Any?
+    /// The timer that keeps the gaze in step with the cursor.
+    private var gazeTimer: Timer?
+    /// Which way the pet is looking, as one of the sixteen buckets.
+    ///
+    /// `-1` means "not looking", which is also how the helper asks the
+    /// page to drop the gaze.
+    private var gazeIndex = -1
+    /// The biggest gap between the cursor and the window during a drag.
+    ///
+    /// This is the distance a person would see the pet trailing behind,
+    /// so it is worth writing down.
+    private var maxTrail: Double = 0
+    /// When the pet first moved after the press.
+    private var firstMoveTime: Double = 0
+    /// When the press happened.
+    private var pressTime: Double = 0
+    /// Where to write a line about every drag.
+    private var dragLogPath = ""
+    /// Where the cursor was before the press benchmark moved it.
+    private var pressBenchmarkOrigin = NSPoint.zero
     /// How many times the window has actually been moved during this drag.
     private var windowMoves = 0
+    /// How many times the window was asked to move, moved or not.
+    private var moveAttempts = 0
+    /// How long the window server took to answer the probe, in total.
+    private var probeCost: Double = 0
+    private var probeCount = 0
     private var dragRequests = 0
+    /// Whether to measure where the window server painted the window.
+    private var measureLag = false
+    /// How far behind the cursor the window has ever been painted.
+    private var maxDragLag: Double = 0
+    /// How many frames the drag has run for.
+    private var frameCounter = 0
+    /// When the window was moved, to measure how regular the moves are.
+    private var moveStamps: [Double] = []
+    /// When the follow timer fired, to measure how regular that is.
+    private var tickStamps: [Double] = []
+    /// The longest the main thread was blocked, and how many beats it took.
+    private var heartbeatGaps: () -> Double = { 0 }
+    private var heartbeatCount: () -> Int = { 0 }
     /// How long the window moves have taken in total.
     private var moveCost: Double = 0
-    /// How far behind the cursor the window has ever been.
-    private var maxDragLag: Double = 0
     private var dragBench = false
+    /// Which parts of the drag the benchmark switches off.
+    ///
+    /// The benchmark has to be able to take the measurement out of the
+    /// picture, otherwise it ends up measuring its own probe: reading the
+    /// window list is a synchronous conversation with the window server, and
+    /// it happens right after a window move, which is exactly when the
+    /// window server has the least time to spare.
+    private var benchProfile: Set<String> = []
     private var performNow = false
     private var performanceTimer: Timer?
-    private var mouseTimer: Timer?
     private var trackingArea: NSTrackingArea?
     private var pointerInsidePanel = false
     private var lookOutCount = 0
@@ -127,7 +187,13 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
         watchParent()
         if dragBench {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-                self?.runDragBenchmark()
+                guard let self else { return }
+                if self.benchProfile.contains("press")
+                    || self.benchProfile.contains("oldpress") {
+                    self.runPressBenchmark()
+                } else {
+                    self.runDragBenchmark()
+                }
             }
         }
         if diagnose { runGazeDrill() }
@@ -177,6 +243,8 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
             case "--self-test": selfTest = true
             case "--perform-now": performNow = true
             case "--drag-bench": dragBench = true
+            case "--drag-log": dragLogPath = iterator.next() ?? ""
+            case "--bench-profile": benchProfile = Set((iterator.next() ?? "").split(separator: ",").map(String.init))
             case "--diagnose": diagnose = true; diagnoseAfter = Double(iterator.next() ?? "") ?? 0
             default: break
             }
@@ -413,24 +481,109 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
         )
         webView.addTrackingArea(tracker)
         trackingArea = tracker
-        watchMouse()
+        watchGaze()
+        watchPresses()
     }
 
-    /// Watch the mouse and tell the page when the cursor leaves the panel.
+    /// Watch for the press, so the drag can start where it happened.
     ///
-    /// The tracking area reports the exit immediately, but a floating panel
-    /// that never becomes key does not always get tracking events, so the
-    /// mouse position is also polled. `NSEvent.mouseLocation` and
-    /// `panel.frame` are both in Cocoa screen coordinates.
-    private func watchMouse() {
-        mouseTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
-            guard let self, let panel = self.panel else { return }
-            let inside = panel.frame.contains(NSEvent.mouseLocation)
-            if inside != self.pointerInsidePanel {
-                self.pointerInsidePanel = inside
-                if !inside { self.lookOutInPage() }
-            }
+    /// The event monitor runs before the window hands the event to the
+    /// WebView, so the helper knows where the press happened while the
+    /// page is still working out what to do with it. The event is passed
+    /// on unchanged: the page still needs it to play the pet's reaction.
+    private func watchPresses() {
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .leftMouseUp]
+        ) { [weak self] event in
+            self?.handleMouseEvent(event)
+            return event
         }
+    }
+
+    /// React to the mouse before the page gets the chance to.
+    private func handleMouseEvent(_ event: NSEvent) {
+        switch event.type {
+        case .leftMouseDown:
+            let point = panel.convertPoint(toScreen: event.locationInWindow)
+            // Only a press on the pet itself starts a drag.
+            guard panel.frame.contains(point) else { return }
+            pressTime = CFAbsoluteTimeGetCurrent()
+            maxTrail = 0
+            firstMoveTime = 0
+            windowMoves = 0
+            moveAttempts = 0
+            // The benchmark can put the drag back on the old path, where
+            // the page reported the press, to see what that costs.
+            guard !benchProfile.contains("oldpress") else { return }
+            drag.begin(at: point, origin: panel.frame.origin)
+            startFollowTimer()
+            // The page drops the gaze when the pet reacts to a click, so
+            // the helper forgets the direction too and puts it back when
+            // the reaction is over.
+            dropGaze()
+        case .leftMouseUp:
+            finishDrag()
+        default:
+            break
+        }
+    }
+
+    /// Keep the pet's gaze on the cursor.
+    ///
+    /// The gaze used to be driven by the page's pointer events, and that
+    /// only works when the helper happens to be the frontmost app: macOS
+    /// sends mouse-moved events to the active application, and a pet
+    /// floating over somebody's desktop is not it. The helper knows where
+    /// the cursor is at all times, so it tells the page instead -- and the
+    /// pet looks at the cursor without the delay of a round trip through
+    /// the web view.
+    private func watchGaze() {
+        let rate = panel.screen?.maximumFramesPerSecond ?? 60
+        let timer = Timer(timeInterval: 1.0 / Double(max(1, rate)), repeats: true) { [weak self] _ in
+            self?.updateGaze()
+        }
+        // Common mode, so the gaze keeps up while AppKit is tracking the
+        // mouse.
+        RunLoop.main.add(timer, forMode: .common)
+        gazeTimer = timer
+    }
+
+    /// Point the pet at the cursor, if the cursor is close enough.
+    private func updateGaze() {
+        guard let panel else { return }
+        let mouse = cursor
+        let inside = panel.frame.contains(mouse)
+        if inside != pointerInsidePanel {
+            pointerInsidePanel = inside
+        }
+        // A drag already has the pet's attention.
+        if drag.isDragging { return }
+        // The web view counts from the top left, the screen from the
+        // bottom left.
+        let clientX = mouse.x - panel.frame.origin.x
+        let clientY = panel.frame.height - (mouse.y - panel.frame.origin.y)
+        let dx = clientX - size / 2
+        // The pet's eyes sit a little above the middle of the cell.
+        let dy = clientY - size * 0.42
+        if hypot(dx, dy) > size * 1.4 {
+            dropGaze()
+            return
+        }
+        // 0 degrees points straight up; the angle grows clockwise.
+        let degrees = atan2(dx, -dy) * 180 / .pi
+        let index = ((Int((degrees / 22.5).rounded()) % 16) + 16) % 16
+        guard index != gazeIndex else { return }
+        gazeIndex = index
+        webView.evaluateJavaScript(
+            "window.DSHPet && window.DSHPet.look(\(clientX), \(clientY))"
+        ) { _, _ in }
+    }
+
+    /// Stop looking at the cursor.
+    private func dropGaze() {
+        guard gazeIndex != -1 else { return }
+        gazeIndex = -1
+        lookOutInPage()
     }
 
     /// Tell the page that the cursor is no longer over the pet.
@@ -446,10 +599,15 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
 
     override func mouseExited(with event: NSEvent) {
         pointerInsidePanel = false
-        lookOutInPage()
+        // Forget the direction as well, so the gaze comes back when the
+        // cursor comes back.
+        dropGaze()
     }
 
     private func loadPet() {
+        // The benchmark can leave the page empty, to find out how much of a
+        // drag is the web view's doing and how much is the window's.
+        if benchProfile.contains("noweb") { return }
         loadSpritePet(base: URL(fileURLWithPath: petDir))
     }
     /// Load the shared player page and hand it the pet's manifest.
@@ -626,57 +784,152 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
         case "down":
             performanceTimer?.invalidate()
             schedulePerformance(after: 20)
-            startMouse = NSEvent.mouseLocation
-            startOrigin = panel.frame.origin
-            drag.begin(at: cursor, origin: startOrigin)
-            windowMoves = 0
-            dragRequests = 0
-            startDisplayLink()
-        case "move":
-            // The renderer sends a signal; AppKit supplies the authoritative
-            // mouse location, so no JS coordinate conversion is needed.
-            handleDragMove()
-        case "up":
-            // One last move, so the pet ends exactly where the cursor is.
-            applyDrag()
-            drag.end()
-            stopDisplayLink()
-            if drag.moved {
-                saveOrigin()
-            } else {
-                activateDSH()
+            // The press reached the event monitor before it reached the
+            // page, so the drag is already running and it started at the
+            // place the press happened. Starting it again from here would
+            // move the pet by however far the cursor travelled while the
+            // press was on its way through the web view.
+            if !drag.isDragging {
+                startMouse = cursor
+                startOrigin = panel.frame.origin
+                drag.begin(at: startMouse, origin: startOrigin)
+                windowMoves = 0
+                dragRequests = 0
+                startFollowTimer()
             }
+        case "move":
+            // The page used to send a move for every pointer event, and the
+            // window used to be moved for every one of them. The pet now
+            // follows the cursor by itself, so there is nothing to do.
+            break
+        case "ready":
+            // The pet has arrived; the gaze has to be sent again.
+            gazeIndex = -1
+        case "up":
+            finishDrag()
         default:
             break
         }
     }
 
-    /// A drag request from the page.
+    /// Follow the cursor, once per frame, for as long as the button is down.
     ///
-    /// Nothing is moved here. The window is moved once per display frame,
-    /// because a pointer event arrives far more often than the screen
-    /// refreshes, and every window move asks the window server to
-    /// re-composite the WebView.
-    private func handleDragMove() {
+    /// The button state is read from the system rather than taken from the
+    /// page, because the page cannot tell us when the drag ends once the
+    /// cursor has left the pet.
+    private func followCursor() {
         guard drag.isDragging else { return }
-        dragRequests += 1
-        drag.requestMove()
-        // Without a timer there is nothing to coalesce with, so the move
-        // happens right away.
-        if dragTimer == nil {
-            applyDrag()
+        tickStamps.append(CFAbsoluteTimeGetCurrent())
+        if !buttonDown {
+            finishDrag()
+            return
+        }
+        let current = cursor
+        drag.noteMoved(mouse: current)
+        let target = drag.windowOrigin(for: current)
+        if target == panel.frame.origin { return }
+        moveAttempts += 1
+        // How far the pet is behind the cursor right now. This is the
+        // distance a person sees the pet trailing, so it is worth
+        // keeping the worst one of the drag.
+        let trail = hypot(target.x - panel.frame.origin.x,
+                          target.y - panel.frame.origin.y)
+        maxTrail = max(maxTrail, trail)
+        if firstMoveTime == 0 {
+            firstMoveTime = CFAbsoluteTimeGetCurrent()
+        }
+        let started = CFAbsoluteTimeGetCurrent()
+        if !benchProfile.contains("nomove") {
+            panel.setFrameOrigin(target)
+        }
+        moveCost += CFAbsoluteTimeGetCurrent() - started
+        windowMoves += 1
+        moveStamps.append(CFAbsoluteTimeGetCurrent())
+        if measureLag, !benchProfile.contains("noprobe") {
+            // Reading the window list is expensive, so it is sampled rather
+            // than done every frame.
+            frameCounter += 1
+            if frameCounter % 4 == 0 {
+                let probeStarted = CFAbsoluteTimeGetCurrent()
+                let painted = paintedOrigin()
+                probeCost += CFAbsoluteTimeGetCurrent() - probeStarted
+                probeCount += 1
+                if let painted {
+                    maxDragLag = max(maxDragLag, hypot(painted.x - target.x,
+                                                        painted.y - target.y))
+                }
+            }
         }
     }
 
-    /// Put the window where the cursor is, if the cursor has moved.
-    private func applyDrag() {
+    /// The drag is over: either the button was released or the page said so.
+    private func finishDrag() {
         guard drag.isDragging else { return }
-        guard let origin = drag.takeWindowOrigin(for: cursor) else { return }
-        if origin == panel.frame.origin { return }
-        let started = CFAbsoluteTimeGetCurrent()
-        panel.setFrameOrigin(origin)
-        moveCost += CFAbsoluteTimeGetCurrent() - started
-        windowMoves += 1
+        drag.end()
+        stopFollowTimer()
+        if drag.moved {
+            saveOrigin()
+        } else {
+            activateDSH()
+        }
+        writeDragLog()
+        // The pet looks at the cursor again once the drag is over.
+        gazeIndex = -1
+    }
+
+    /// Write down what the drag actually did.
+    ///
+    /// The pet is supposed to be under the cursor the whole time, and the
+    /// only honest way to know whether it was is to let somebody drag it
+    /// and read the numbers afterwards: how long the pet took to start
+    /// following, and how far behind the cursor it ever was.
+    private func writeDragLog() {
+        guard !dragLogPath.isEmpty else { return }
+        let first = firstMoveTime == 0 ? 0 : (firstMoveTime - pressTime) * 1000
+        let object: [String: Any] = [
+            "at": Date().timeIntervalSince1970,
+            "moves": windowMoves,
+            "pressToFirstMoveMs": (first * 10).rounded() / 10,
+            "maxTrailPx": (maxTrail * 10).rounded() / 10,
+            "moved": drag.moved,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return }
+        var line = data
+        line.append(0x0A)
+        let url = URL(fileURLWithPath: dragLogPath)
+        // Keep the log small: it is a note of the last few drags, not a
+        // history of every drag ever.
+        if let attributes = try? FileManager.default.attributesOfItem(atPath: dragLogPath),
+           let size = attributes[.size] as? Int, size > 32_768 {
+            try? FileManager.default.removeItem(at: url)
+        }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(line)
+            try? handle.close()
+        }
+    }
+
+    /// Follow the cursor at the refresh rate of the display.
+    ///
+    /// The rate is the refresh rate of the display the pet is on, so a
+    /// ProMotion screen is not held back to 60.
+    private func startFollowTimer() {
+        guard followTimer == nil else { return }
+        let rate = panel.screen?.maximumFramesPerSecond ?? 60
+        let timer = Timer(timeInterval: 1.0 / Double(max(1, rate)), repeats: true) {
+            [weak self] _ in
+            self?.followCursor()
+        }
+        // Common mode, so the timer keeps firing while AppKit is tracking
+        // the mouse.
+        RunLoop.main.add(timer, forMode: .common)
+        followTimer = timer
+    }
+
+    private func stopFollowTimer() {
+        followTimer?.invalidate()
+        followTimer = nil
     }
 
     /// How well the window kept up with a fast drag.
@@ -686,80 +939,250 @@ final class PetController: NSResponder, NSApplicationDelegate, WKScriptMessageHa
     /// enough to measure anything the user would feel. So this drives the
     /// very same code path with a cursor it controls, moving faster than
     /// any display, and reports what the window did with it.
+    ///
+    /// The interesting number is not how often the window was asked to
+    /// move, but where the window server actually **painted** it: that
+    /// gap between where the window was asked to be and where it ended up
+    /// on the screen is exactly what a person feels as "the pet does not
+    /// follow the cursor".
     private func runDragBenchmark() {
         let origin = panel.frame.origin
         let start = NSPoint(x: 400, y: 400)
         cursorOverride = start
+        buttonOverride = true
         drag.begin(at: start, origin: origin)
         windowMoves = 0
+        moveAttempts = 0
+        probeCost = 0
+        probeCount = 0
         dragRequests = 0
         moveCost = 0
         maxDragLag = 0
-        startDisplayLink()
+        moveStamps = []
+        tickStamps = []
+        measureLag = true
+        pressTime = CFAbsoluteTimeGetCurrent()
+        maxTrail = 0
+        firstMoveTime = 0
+        startFollowTimer()
 
         // 240 requests a second for two seconds: a fast trackpad, and
         // twice the refresh rate of the display.
         let total = 480
         let interval = 1.0 / 240.0
-        var sent = 0
-        func step() {
-            guard sent < total else {
-                // The drag ends with one last move, so the pet is exactly
-                // where the cursor is.
-                applyDrag()
-                let target = drag.windowOrigin(for: cursor)
-                let lag = hypot(target.x - panel.frame.origin.x,
-                                target.y - panel.frame.origin.y)
-                print("drag bench: requests=\(dragRequests) "
-                      + "windowMoves=\(windowMoves) "
-                      + "moveCostMs=\(Int(moveCost * 1000)) "
-                      + "maxLagPx=\(Int(maxDragLag)) "
-                      + "finalLagPx=\(Int(lag))")
-                drag.end()
-                stopDisplayLink()
-                cursorOverride = nil
-                NSApp.terminate(nil)
-                return
+        // The cursor path runs on its own timer rather than a chain of
+        // delayed blocks: a chain of blocks monopolises the main queue and
+        // would starve the follow timer, which is exactly the jitter this
+        // is trying to measure. The cursor is placed by the clock rather
+        // than by the number of steps, so a late tick still leaves the
+        // cursor in the right place.
+        let began = CFAbsoluteTimeGetCurrent()
+        let speed = 480.0
+        var path: Timer?
+        path = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let elapsed = CFAbsoluteTimeGetCurrent() - began
+            self.cursorOverride = NSPoint(x: start.x + elapsed * speed, y: start.y)
+            self.dragRequests += 1
+            guard elapsed >= Double(total) * interval else { return }
+            path?.invalidate()
+            self.finishDrag()
+            self.reportDragBenchmark()
+        }
+        if let path { RunLoop.main.add(path, forMode: .common) }
+        // A heartbeat on the main run loop: if the thread is blocked, this
+        // timer cannot fire either, and the gap between two beats is the
+        // length of the block.
+        var beats = 0
+        var last = CFAbsoluteTimeGetCurrent()
+        var worst = 0.0
+        let heartbeat = Timer(timeInterval: 0.001, repeats: true) { _ in
+            let now = CFAbsoluteTimeGetCurrent()
+            worst = max(worst, (now - last) * 1000)
+            last = now
+            beats += 1
+        }
+        RunLoop.main.add(heartbeat, forMode: .common)
+        heartbeatGaps = { worst }
+        heartbeatCount = { beats }
+    }
+
+    /// Post a press at the cursor, so the drag can be exercised without a
+    /// real mouse.
+    ///
+    /// Synthetic mouse *events* are dropped by the system on this machine,
+    /// but an event posted straight into the app still reaches the event
+    /// monitor -- which is the part this needs to test.
+    private func postTestPress(at point: NSPoint) {
+        let local = panel.convertPoint(fromScreen: point)
+        guard let event = NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: local,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: Int(panel.windowNumber),
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        ) else { return }
+        NSApp.postEvent(event, atStart: false)
+    }
+
+    /// Post a release at the cursor.
+    private func postTestRelease(at point: NSPoint) {
+        let local = panel.convertPoint(fromScreen: point)
+        guard let event = NSEvent.mouseEvent(
+            with: .leftMouseUp,
+            location: local,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: Int(panel.windowNumber),
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 0
+        ) else { return }
+        NSApp.postEvent(event, atStart: false)
+    }
+
+    /// Drive a whole drag the way a person would, and report what the pet
+    /// did.
+    ///
+    /// The press is posted into the app, the cursor is really warped along
+    /// a straight line, and the helper follows it. The interesting number
+    /// is the trail: how far behind the cursor the pet ever was.
+    private func runPressBenchmark() {
+        let origin = panel.frame.origin
+        // Press on the pet itself, the way a person would.
+        let start = NSPoint(x: origin.x + size / 2, y: origin.y + size / 2)
+        pressBenchmarkOrigin = NSEvent.mouseLocation
+        warpCursor(to: start)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self else { return }
+            // A posted event does not press the real button, so the
+            // helper is told about the button as well.
+            self.buttonOverride = true
+            self.maxTrail = 0
+            self.firstMoveTime = 0
+            self.windowMoves = 0
+            self.moveAttempts = 0
+            // The press and the movement start together: the pet is
+            // expected to be under the cursor from the first frame of the
+            // drag.
+            self.postTestPress(at: start)
+            self.warpPath(from: start, duration: 1.0, speed: 700)
+        }
+    }
+
+    /// Move the real cursor to a point.
+    private func warpCursor(to point: NSPoint) {
+        let union = NSScreen.screens.map(\.frame).reduce(NSRect.null) { $0.union($1) }
+        let height = union.maxY - union.minY
+        CGWarpMouseCursorPosition(CGPoint(x: point.x, y: height - (point.y - union.minY)))
+    }
+
+    /// Drag the real cursor along a straight line.
+    private func warpPath(from start: NSPoint, duration: Double, speed: Double) {
+        let began = CFAbsoluteTimeGetCurrent()
+        var timer: Timer?
+        timer = Timer(timeInterval: 1.0 / 240.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let elapsed = CFAbsoluteTimeGetCurrent() - began
+            self.warpCursor(to: NSPoint(x: start.x + elapsed * speed, y: start.y))
+            guard elapsed >= duration else { return }
+            timer?.invalidate()
+            let end = NSPoint(x: start.x + duration * speed, y: start.y)
+            self.postTestRelease(at: end)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                self.reportPressBenchmark()
             }
-            sent += 1
-            cursorOverride = NSPoint(x: start.x + Double(sent) * 2.0, y: start.y)
-            handleDragMove()
-            let target = drag.windowOrigin(for: cursor)
-            maxDragLag = max(maxDragLag, hypot(target.x - panel.frame.origin.x,
-                                                target.y - panel.frame.origin.y))
-            DispatchQueue.main.asyncAfter(deadline: .now() + interval) { step() }
         }
-        step()
+        if let timer { RunLoop.main.add(timer, forMode: .common) }
     }
 
-    /// Move the pet window at most once per display frame.
-    ///
-    /// A pointer event arrives far more often than the screen refreshes, and
-    /// every window move asks the window server to re-composite the WebView.
-    /// Moving the window once per frame is the fastest a window can follow a
-    /// cursor at all, and because a drag request is a flag rather than a
-    /// queue, a frame that takes too long is skipped instead of leaving a
-    /// backlog behind -- and a backlog is what made the pet trail the cursor
-    /// by more and more the longer the drag lasted.
-    ///
-    /// The rate is the refresh rate of the display the pet is on, so a
-    /// ProMotion screen is not held back to 60.
-    private func startDisplayLink() {
-        guard dragTimer == nil else { return }
-        let rate = panel.screen?.maximumFramesPerSecond ?? 60
-        let timer = Timer(timeInterval: 1.0 / Double(max(1, rate)), repeats: true) {
-            [weak self] _ in
-            self?.applyDrag()
-        }
-        // Common mode, so the timer keeps firing while AppKit is tracking
-        // the mouse.
-        RunLoop.main.add(timer, forMode: .common)
-        dragTimer = timer
+    /// Print what the drag benchmark measured.
+    private func reportPressBenchmark() {
+        let mouse = cursor
+        let grab = drag.grabOffset
+        let trail = hypot(mouse.x - panel.frame.origin.x - grab.x,
+                          mouse.y - panel.frame.origin.y - grab.y)
+        let first = firstMoveTime == 0 ? 0 : (firstMoveTime - pressTime) * 1000
+        print("press bench: moves=\(windowMoves) attempts=\(moveAttempts) "
+              + "pressToFirstMoveMs=\(String(format: "%.1f", first)) "
+              + "maxTrailPx=\(String(format: "%.1f", maxTrail)) "
+              + "finalTrailPx=\(String(format: "%.1f", trail)) "
+              + "moved=\(drag.moved)")
+        warpCursor(to: pressBenchmarkOrigin)
+        buttonOverride = nil
+        NSApp.terminate(nil)
     }
 
-    private func stopDisplayLink() {
-        dragTimer?.invalidate()
-        dragTimer = nil
+    /// Print what the drag benchmark measured.
+    private func reportDragBenchmark() {
+        let target = drag.windowOrigin(for: cursor)
+        let painted = benchProfile.contains("noprobe") ? nil : paintedOrigin()
+        let lag = painted.map { hypot($0.x - target.x, $0.y - target.y) }
+            ?? hypot(target.x - panel.frame.origin.x, target.y - panel.frame.origin.y)
+        var gaps: [Double] = []
+        for index in 1..<max(1, moveStamps.count) {
+            gaps.append((moveStamps[index] - moveStamps[index - 1]) * 1000)
+        }
+        let over20 = gaps.filter { $0 > 20 }.count
+        let over50 = gaps.filter { $0 > 50 }.count
+        let head = gaps.prefix(6).map { String(format: "%.1f", $0) }.joined(separator: ",")
+        var tickGaps: [Double] = []
+        for index in 1..<max(1, tickStamps.count) {
+            tickGaps.append((tickStamps[index] - tickStamps[index - 1]) * 1000)
+        }
+        tickGaps.sort()
+        let tickMedian = tickGaps.isEmpty ? 0 : tickGaps[tickGaps.count / 2]
+        let tickWorst = tickGaps.last ?? 0
+        let tickOver20 = tickGaps.filter { $0 > 20 }.count
+        gaps.sort()
+        let median = gaps.isEmpty ? 0 : gaps[gaps.count / 2]
+        let worst = gaps.last ?? 0
+        let spread = gaps.isEmpty ? 0 : (gaps.last! - gaps.first!)
+        print("drag bench: requests=\(dragRequests) "
+              + "windowMoves=\(windowMoves) moveAttempts=\(moveAttempts) "
+              + "moveCostMs=\(Int(moveCost * 1000)) "
+              + "probeCostMs=\(Int(probeCost * 1000)) probes=\(probeCount) "
+              + "maxPaintedLagPx=\(Int(maxDragLag)) "
+              + "finalPaintedLagPx=\(Int(lag)) "
+              + "moveGapMedianMs=\(String(format: "%.2f", median)) "
+              + "moveGapWorstMs=\(String(format: "%.2f", worst)) "
+              + "moveGapSpreadMs=\(String(format: "%.2f", spread)) "
+              + "gapsOver20ms=\(over20) gapsOver50ms=\(over50) "
+              + "firstGaps=\(head) "
+              + "mainThreadWorstBlockMs=\(String(format: "%.1f", heartbeatGaps())) "
+              + "heartbeats=\(heartbeatCount()) "
+              + "tickMedianMs=\(String(format: "%.2f", tickMedian)) "
+              + "tickWorstMs=\(String(format: "%.2f", tickWorst)) "
+              + "tickOver20ms=\(tickOver20)")
+        drag.end()
+        stopFollowTimer()
+        cursorOverride = nil
+        buttonOverride = nil
+        NSApp.terminate(nil)
+    }
+
+    /// Where the window is actually painted, as the window server sees it.
+    ///
+    /// `panel.frame` is where the window was asked to be. The window server
+    /// paints it a frame or so later, and that gap is what a person feels.
+    private func paintedOrigin() -> NSPoint? {
+        let number = panel.windowNumber
+        guard number > 0,
+              let list = CGWindowListCopyWindowInfo([.optionIncludingWindow],
+                                                    CGWindowID(number)) as? [[String: Any]],
+              let info = list.first,
+              let bounds = info[kCGWindowBounds as String] as? [String: Any],
+              let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+              let screen = panel.screen else { return nil }
+        // The window server reports the top-left corner of a top-left
+        // space; AppKit wants the bottom-left one.
+        return NSPoint(x: rect.origin.x,
+                       y: screen.frame.maxY - rect.origin.y - rect.height)
     }
 }
 

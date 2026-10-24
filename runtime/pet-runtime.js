@@ -10,8 +10,6 @@
 (() => {
   let pet = null
   let dragging = false
-  // Whether a "move" is waiting to be sent.
-  let moveScheduled = false
 
   function send(type) {
     try {
@@ -22,6 +20,9 @@
   window.DSHPet = {
     register(next) {
       pet = next
+      // The helper sends the gaze, so it has to know when the pet is
+      // ready to be pointed at something.
+      send('ready')
     },
     perform() {
       try {
@@ -50,6 +51,21 @@
         pet?.lookOut?.()
       } catch (error) {
         console.error('dsh-pet: lookOut failed', error)
+      }
+    },
+    /**
+     * Look at a point, in the page's own coordinates.
+     *
+     * The native helper sends this. A floating pet is not the frontmost
+     * app, and macOS only hands mouse-moved events to the frontmost app,
+     * so a page that waits for a pointer event never hears about the
+     * cursor at all. The helper knows where the cursor is, so it says so.
+     */
+    look(x, y) {
+      try {
+        pet?.lookAt?.(x, y)
+      } catch (error) {
+        console.error('dsh-pet: look failed', error)
       }
     },
     /**
@@ -85,21 +101,12 @@
 
   document.addEventListener('pointermove', (event) => {
     if (!dragging) return
-    // One message per frame is enough.
+    // No message goes across the bridge here.
     //
-    // The cursor produces pointer events far faster than the screen
-    // refreshes, and every one of them used to become a message across
-    // the bridge -- and, on the other side, a window move. The native
-    // helper reads the real cursor position itself, so it only needs to
-    // know that the pet is still being dragged: one message per frame
-    // tells it exactly as much, and the pet still follows the cursor.
-    if (!moveScheduled) {
-      moveScheduled = true
-      requestAnimationFrame(() => {
-        moveScheduled = false
-        send('move')
-      })
-    }
+    // The native helper reads the real cursor position itself and moves
+    // the window on its own clock, so a message per pointer event would
+    // only tell it something it already knows -- at the price of a trip
+    // through the web view for every one of them.
     event.preventDefault()
   })
 

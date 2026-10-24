@@ -388,11 +388,12 @@ tracker.lookOut()
 runFrame()
 assert.equal(tracker.lookFrame, null, 'a pending gaze is dropped when the cursor leaves')
 
-// ---- the drag sends one message per frame --------------------------------
+// ---- the drag sends no messages at all -----------------------------------
 //
-// The native helper moves the window once per frame, so the page only has
-// to say "the cursor moved" -- once per frame is enough, and every message
-// is work on the other side.
+// The native helper reads the real cursor position itself and moves the
+// window on its own clock, so it does not need the page to report that
+// the cursor moved. Every message the page sends is a trip through the
+// web view for something the helper already knows.
 
 const runtime = readFileSync(join(here, '..', 'runtime', 'pet-runtime.js'), 'utf8')
 const sent = []
@@ -411,12 +412,19 @@ assert.deepEqual(sent, ['down'], 'a press is reported once')
 for (let index = 0; index < 50; index += 1) {
   fire('pointermove', { clientX: centreX + index, clientY: centreY, preventDefault() {} })
 }
-assert.deepEqual(sent, ['down'], 'a move waits for the frame')
-
 runFrame()
-assert.deepEqual(sent, ['down', 'move'], 'fifty pointer events send one move')
+assert.deepEqual(sent, ['down'], 'fifty pointer events send nothing')
 
 fire('pointerup', { preventDefault() {} })
-assert.deepEqual(sent, ['down', 'move', 'up'], 'the release is reported')
+assert.deepEqual(sent, ['down', 'up'], 'the release is reported')
+
+// The helper can also point the pet at the cursor, which is the only way
+// the gaze works when the pet is not the frontmost app.
+let seenLook = null
+globalThis.window.DSHPet.register({
+  lookAt: (x, y) => { seenLook = { x, y } },
+})
+globalThis.window.DSHPet.look(12, 34)
+assert.deepEqual(seenLook, { x: 12, y: 34 }, 'the helper can point the pet at the cursor')
 
 console.log('sprite-pet engine: all checks passed')
