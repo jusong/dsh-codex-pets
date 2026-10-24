@@ -64,16 +64,19 @@ const DERIVED_PETS = ['teal-hoot', 'violet-hoot', 'mint-hoot',
 // A pet that was installed into Codex by hand, rather than shipped with it.
 const CUSTOM_PETS = ['deepseek']
 
-assert.equal(pets.length, CODEX_PETS.length + ORIGINAL_PETS.length + DERIVED_PETS.length + CUSTOM_PETS.length,
+const SHIPPED = [...CODEX_PETS, ...ORIGINAL_PETS, ...DERIVED_PETS, ...CUSTOM_PETS]
+assert.ok(pets.length >= SHIPPED.length,
   'the gallery holds the nine Codex pets, the two original ones, the six derived ones and the custom one')
 assert.ok(pets.some((pet) => pet.id === 'hoots'), 'hoots is in the gallery')
 assert.ok(!pets.some((pet) => pet.id === 'whale'), 'the whale is gone')
+// The shipped pets keep their curated order at the front. Pets installed from
+// Codex follow them, by name, and are checked by tools/test-codex-compat.mjs.
 assert.deepEqual(
-  pets.map((pet) => pet.id),
-  [...CODEX_PETS, ...ORIGINAL_PETS, ...DERIVED_PETS, ...CUSTOM_PETS],
+  pets.slice(0, SHIPPED.length).map((pet) => pet.id),
+  SHIPPED,
   'the gallery order follows the Codex app, then the original pets, then the derived ones, then the custom one',
 )
-for (const pet of pets) {
+for (const pet of pets.slice(0, SHIPPED.length)) {
   assert.equal(pet.grid.columns, 8, `${pet.id} has 8 columns`)
   assert.equal(pet.grid.rows, 11, `${pet.id} has 11 rows`)
   assert.ok(pet.look, `${pet.id} carries the look rows`)

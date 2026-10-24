@@ -76,7 +76,7 @@ pets/<id>/
 
 | 项 | 值 |
 |---|---|
-| 尺寸 | `1536 × 2288` |
+| 尺寸 | `1536 × 2288`（v2）；也接受 `1536 × 1872`（v1，9 行，没有注视行） |
 | 网格 | 8 列 × 11 行 |
 | 单元格 | `192 × 208` |
 | 格式 | PNG 或 WebP，透明背景 |
@@ -103,10 +103,69 @@ pets/<id>/
 
 1. 做一张符合上面网格契约的图集，放进 `pets/<id>/spritesheet.webp`
 2. 写 `pets/<id>/pet.json`，把图集的行语义填进 `animations`
-3. 在 `pets/index.json` 里登记
-4. 在 **设置 → 宠物** 里选它（也可以在 config 里写 `pet: <id>`）
+3. 在 **设置 → 宠物** 里选它（也可以在 config 里写 `pet: <id>`）
 
-不需要写任何 JS 或 HTML。设置页的画廊是运行时从 `pets/index.json` 读的，所以第 3 步做完刷新一下设置页就能看到新宠物。
+不需要写任何 JS 或 HTML，也不需要登记：设置页的画廊每次请求都会重新读 `pets/`。`pets/index.json` 只管**随插件发布的那 18 只的顺序**（排在最前），其余任何带 `pet.json` 的目录按名字排在后面。
+
+---
+
+## 安装 Codex 宠物
+
+[codex-pets.net](https://codex-pets.net) 上有很多社区做的 Codex 宠物，本项目**直接兼容**，一条命令装进 `pets/`：
+
+```bash
+node tools/install-pet.mjs deepseek                                   # 站点上的宠物 id
+node tools/install-pet.mjs 'https://codex-pets.net/#/pets/deepseek'    # 或者直接贴页面链接
+node tools/install-pet.mjs ~/Downloads/deepseek.zip                    # 站点 Download 按钮给的 zip
+node tools/install-pet.mjs ~/.codex/pets/wangcai                       # 本机 Codex 里已有的
+node tools/install-pet.mjs --codex-home wangcai blue-whale-girl        # 同上，按 id 一次装多只
+```
+
+不需要 Python、不需要任何依赖：Node 18+ 就行（zip 用系统自带的 `unzip`）。装完刷新设置页，宠物就在画廊里，**不用登记**（要让桌面上的宠物换成它，在设置页点一下即可）。
+
+| 选项 | 作用 |
+|---|---|
+| `--id <id>` | 换个目录名装（只能一次装一只）。清单 id 不是 ASCII（比如中文）又没法从文件夹名推出来时必须给 |
+| `--force` | 替换已经装过的同名宠物。默认**拒绝覆盖**，并告诉你用 `--id` 并存还是 `--force` 替换 |
+| `--registry <url>` | 换一个注册表地址（默认 `https://codex-pets.net`） |
+| `--pets-dir <dir>` | 装到别处（默认本项目的 `pets/`） |
+| `--dry-run` | 只检查来源、说明会装什么，不写任何文件 |
+
+### 兼容的到底是什么
+
+一只 Codex 宠物就是**两个文件**，别的什么都没有：
+
+```
+pet.json          { "id", "displayName", "description", "spritesheetPath", "spriteVersionNumber"?, "kind"? }
+spritesheet.webp  1536 × 1872（v1，9 行）或 1536 × 2288（v2，11 行，多 16 个注视方向）
+```
+
+**它没有动画表。** 每一行是哪个动画、有几帧、每帧多久，是 Codex 契约规定的，不是宠物自己写的。所以本项目把这张表放在一个地方（`lib/codex-pet.js`，原生端 `CodexContract` 里有同一份），`pet.json` 里没写的字段都按它补：
+
+| 缺什么 | 怎么补 |
+|---|---|
+| `animations` | 官方 9 行 + 每帧时长 |
+| 版本、行数 | **以图集真实像素高度为准**：1872 → v1 / 9 行，2288 → v2 / 11 行；`pet.json` 里的 `spriteVersionNumber` 写错了也以图集为准（装的时候会提示） |
+| `look`（注视光标） | 只有 v2 才有。**v1 宠物没有那 16 行，所以不会转头看光标**——这是图集决定的，不是兼容性缺陷 |
+| `drag` / `react` / `idleRoutine` / `perform` | 和内置宠物一样：拖动切 `running-left/right`、点击跳一下、闲着时在 `waiting / waving / running` 里挑一个演、表演带粒子 |
+| `name` | 取 `displayName` |
+| 预览图 | Codex 宠物没有。设置页直接从图集里裁待机第一帧当缩略图 |
+
+`pet.json` 里**写了**的字段一律优先，所以本项目自己的完整清单（内置 18 只）读出来和以前一模一样。
+
+安装器做的事：先校验（`pet.json` 合法、`spritesheetPath` 只能是文件名不能是路径、图集是 `.webp/.png` 且恰好是上面两种尺寸之一），再把图集**原样**复制过去，把补全后的清单写成 `pet.json`（保留 `displayName`、`kind` 等原字段，记下 `source`）。先写到临时目录再改名，失败不会留下半只宠物。**手动把 Codex 宠物文件夹拷进 `pets/` 也行**——读取端对只有 Codex 字段的 `pet.json` 同样宽容，安装器只是帮你校验和补全。目录名就是宠物 id，清单里的 `id` 和目录名不一致也没关系。
+
+两点安全：`pet.json` 是别人写的，里面的文件名必须是**目录内的文件名**，`../x` 这类路径宿主和安装器都会拒绝；站点的图集链接必须是 `https`（只有 `localhost` 允许 `http`），大小上限 32MB。
+
+### 怎么验证一只宠物能正常播放
+
+原生助手带一个诊断参数，不开窗口，只报告清单怎么对上了图集：
+
+```bash
+bin/dsh-pet-macos --describe --pet-dir pets/deepseek-whale
+```
+
+输出网格、拖动/点击用哪一行、**每个动画有几帧、其中几帧格子里真有像素**（`drawn` 必须等于 `frames`）、16 个注视格有几个有图。行映射错了（比如把 v1 图集按 11 行切）这里一眼就能看出来。
 
 ---
 
@@ -560,6 +619,14 @@ node tools/test-sprite-pet.mjs
 # 宿主半边自检：真的加载 lib/index.js，真的调那三条 Fetch 路由，
 # 断言画廊里有哪几只宠物、图集字节对不对、被删掉的宠物是不是 404
 node tools/check-host.mjs
+
+# Codex 兼容：契约模块、宿主图鉴/路由读纯 Codex 宠物、安装器的各种边界
+# （全在临时目录里，注册表是本地假服务，不联网）
+node tools/test-codex-compat.mjs
+
+# 装一只 Codex 宠物 / 检查一只宠物能不能正常播放
+node tools/install-pet.mjs deepseek --dry-run
+bin/dsh-pet-macos --describe --pet-dir pets/<id>
 
 # 生成浏览器预览页（写到 pets/<id>/__preview.html）
 node tools/preview-sprite-pet.mjs hoots

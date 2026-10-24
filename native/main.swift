@@ -80,6 +80,29 @@ struct PetAnimation {
 }
 
 /**
+ * What the Codex pet contract fixes, and a Codex `pet.json` therefore leaves
+ * out: the rows, the frame timings and the behaviour. The same table lives
+ * in `lib/codex-pet.js`; a manifest that spells things out wins over it.
+ */
+enum CodexContract {
+    static let animations: [(name: String, durations: [Double])] = [
+        ("idle", [280, 110, 110, 140, 140, 320]),
+        ("running-right", [120, 120, 120, 120, 120, 120, 120, 220]),
+        ("running-left", [120, 120, 120, 120, 120, 120, 120, 220]),
+        ("waving", [140, 140, 140, 280]),
+        ("jumping", [140, 140, 140, 140, 280]),
+        ("failed", [140, 140, 140, 140, 140, 140, 140, 240]),
+        ("waiting", [150, 150, 150, 150, 150, 260]),
+        ("running", [120, 120, 120, 120, 120, 220]),
+        ("review", [150, 150, 150, 150, 150, 280]),
+    ]
+    /// A v2 atlas (11 rows) carries the 16 gaze directions on rows 9 and 10.
+    static let lookRows = [9, 10]
+    static let idleActions = ["waiting", "waving", "running"]
+    static let performSteps: [(name: String, repeats: Int)] = [("jumping", 1), ("waving", 1)]
+}
+
+/**
  * A pet is pure data: `pet.json` plus a sprite atlas. The manifest is the
  * same one the browser preview (`runtime/sprite-pet.js`) plays, and the
  * defaults below must stay in step with that engine.
@@ -117,11 +140,19 @@ struct PetManifest {
         atlasURL = directory.appendingPathComponent(sheet)
 
         let cell = object["cell"] as? [String: Any]
-        cellWidth = Int(number(cell?["width"]) ?? 192)
-        cellHeight = Int(number(cell?["height"]) ?? 208)
+        cellWidth = max(1, Int(number(cell?["width"]) ?? 192))
+        cellHeight = max(1, Int(number(cell?["height"]) ?? 208))
+        // A Codex manifest has no grid. The atlas says how many rows it has:
+        // 9 for a v1 pet, 11 for a v2 one.
+        var atlasRows = 11
+        if let source = CGImageSourceCreateWithURL(atlasURL as CFURL, nil),
+           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let pixels = number(properties[kCGImagePropertyPixelHeight]) {
+            atlasRows = max(1, Int(pixels) / cellHeight)
+        }
         let grid = object["grid"] as? [String: Any]
         columns = max(1, Int(number(grid?["columns"]) ?? 8))
-        rows = max(1, Int(number(grid?["rows"]) ?? 11))
+        rows = max(1, Int(number(grid?["rows"]) ?? Double(atlasRows)))
 
         var animations: [String: PetAnimation] = [:]
         for (name, raw) in (object["animations"] as? [String: Any]) ?? [:] {
@@ -129,17 +160,26 @@ struct PetManifest {
             let durations = ((spec["durations"] as? [Any]) ?? []).compactMap(number)
             animations[name] = PetAnimation(name: name, row: Int(number(spec["row"]) ?? 0), durations: durations)
         }
+        if animations.isEmpty {
+            for (row, spec) in CodexContract.animations.enumerated() {
+                animations[spec.name] = PetAnimation(name: spec.name, row: row, durations: spec.durations)
+            }
+        }
         self.animations = animations
         idle = object["idle"] as? String ?? "idle"
 
         let look = object["look"] as? [String: Any]
-        lookRows = ((look?["rows"] as? [Any]) ?? []).compactMap(number).map { Int($0) }
+        if let declared = look?["rows"] as? [Any] {
+            lookRows = declared.compactMap(number).map { Int($0) }
+        } else {
+            lookRows = rows >= 11 ? CodexContract.lookRows : []
+        }
         lookCount = max(1, Int(number(look?["count"]) ?? 16))
         lookStep = number(look?["stepDegrees"]) ?? 22.5
 
         let routine = object["idleRoutine"] as? [String: Any] ?? [:]
         let actions = (routine["animations"] as? [Any])?.compactMap { $0 as? String } ?? []
-        idleActions = actions.isEmpty ? ["waving", "waiting", "review"] : actions
+        idleActions = actions.isEmpty ? CodexContract.idleActions : actions
         var low = 5000.0
         var high = 5000.0
         if let every = routine["every"] as? [Any], every.count == 2,
@@ -154,22 +194,25 @@ struct PetManifest {
         idleMax = high
 
         let perform = object["perform"] as? [String: Any] ?? [:]
-        performSteps = ((perform["sequence"] as? [Any]) ?? []).compactMap { step in
+        let steps: [(name: String, repeats: Int)] = ((perform["sequence"] as? [Any]) ?? []).compactMap { step in
             if let name = step as? String { return (name, 1) }
             if let spec = step as? [String: Any], let name = spec["animation"] as? String {
                 return (name, max(1, Int(number(spec["repeat"]) ?? 1)))
             }
             return nil
         }
+        // A manifest that says nothing about a show gets the Codex one.
+        let showDefined = object["perform"] is [String: Any]
+        performSteps = showDefined ? steps : CodexContract.performSteps
         switch perform["splash"] {
         case let kind as String: splash = kind == "sparkle" ? "sparkle" : "water"
         case let flag as NSNumber where flag.boolValue: splash = "water"
-        default: splash = nil
+        default: splash = showDefined ? nil : "sparkle"
         }
 
         let drag = object["drag"] as? [String: Any]
-        dragRight = drag?["right"] as? String ?? "swim-right"
-        dragLeft = drag?["left"] as? String ?? "swim-left"
+        dragRight = drag?["right"] as? String ?? "running-right"
+        dragLeft = drag?["left"] as? String ?? "running-left"
         reactName = (object["react"] as? [String: Any])?["click"] as? String ?? "jumping"
     }
 }
@@ -254,6 +297,58 @@ final class SpritePlayer {
         groundShadow.locations = [0, 0.7, 1]
 
         play(manifest.idle, loop: true)
+    }
+
+    /// Whether a cell has anything drawn in it.
+    private static func hasPixels(_ image: CGImage?) -> Bool {
+        guard let image else { return false }
+        let width = image.width
+        let height = image.height
+        var data = [UInt8](repeating: 0, count: width * height * 4)
+        let drawn = data.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                                          bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return false }
+        for index in stride(from: 3, to: data.count, by: 4) where data[index] != 0 { return true }
+        return false
+    }
+
+    /// How the manifest reads against the atlas, for `--describe`: every
+    /// animation with the number of its frames that really have a sprite.
+    func report() -> [String: Any] {
+        var animations: [String: Any] = [:]
+        for (name, spec) in manifest.animations {
+            let frames = spec.durations.count
+            let drawn = (0..<frames).filter { frame in
+                cells.indices.contains(spec.row) && cells[spec.row].indices.contains(frame)
+                    && SpritePlayer.hasPixels(cells[spec.row][frame])
+            }.count
+            animations[name] = ["row": spec.row, "frames": frames, "drawn": drawn]
+        }
+        var look: [String: Any] = ["rows": manifest.lookRows]
+        var drawnLook = 0
+        for index in 0..<(manifest.lookRows.isEmpty ? 0 : manifest.lookCount) {
+            let row = manifest.lookRows[min(index / manifest.columns, manifest.lookRows.count - 1)]
+            let column = index % manifest.columns
+            if cells.indices.contains(row), cells[row].indices.contains(column), SpritePlayer.hasPixels(cells[row][column]) {
+                drawnLook += 1
+            }
+        }
+        look["drawn"] = drawnLook
+        look["count"] = manifest.lookRows.isEmpty ? 0 : manifest.lookCount
+        return [
+            "grid": ["columns": manifest.columns, "rows": manifest.rows],
+            "cell": ["width": manifest.cellWidth, "height": manifest.cellHeight],
+            "idle": manifest.idle,
+            "drag": ["right": manifest.dragRight, "left": manifest.dragLeft],
+            "react": manifest.reactName,
+            "animations": animations,
+            "look": look,
+        ]
     }
 
     /// Lay the pet out as a square of `edge`, centred in a container.
@@ -602,6 +697,8 @@ final class PetController: NSObject, NSApplicationDelegate {
     private var panel: NSPanel!
     private var player: SpritePlayer!
     private var petDir = ""
+    /// Print how the pet's manifest reads against its atlas, then exit.
+    private var describe = false
     private var statePath = ""
     private var lockPath = ""
     private var dragLogPath = ""
@@ -646,6 +743,10 @@ final class PetController: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         parseArguments()
+        if describe {
+            describePet()
+            return
+        }
         acquireLock()
         guard let manifest = PetManifest(directory: URL(fileURLWithPath: petDir)) else {
             NSLog("dsh-pet: no usable pet manifest in \(petDir), exiting")
@@ -674,6 +775,19 @@ final class PetController: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// `--describe`: a report for checking a pet without showing it.
+    private func describePet() {
+        guard let manifest = PetManifest(directory: URL(fileURLWithPath: petDir)),
+              let player = SpritePlayer(manifest: manifest, reducedMotion: true),
+              let data = try? JSONSerialization.data(withJSONObject: player.report(), options: [.prettyPrinted, .sortedKeys]) else {
+            FileHandle.standardError.write(Data("no usable pet in \(petDir)\n".utf8))
+            exit(1)
+        }
+        FileHandle.standardOutput.write(data)
+        FileHandle.standardOutput.write(Data("\n".utf8))
+        exit(0)
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
@@ -691,6 +805,7 @@ final class PetController: NSObject, NSApplicationDelegate {
             case "--level": levelName = iterator.next() ?? "floating"
             case "--perform-now": performNow = true
             case "--drag-bench": dragBench = true
+            case "--describe": describe = true
             // The host still passes the web runtime; the helper no longer
             // needs it.
             case "--runtime": _ = iterator.next()
