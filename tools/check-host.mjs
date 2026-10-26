@@ -39,8 +39,8 @@ const ctx = {
 
 apply(ctx, { pet: 'hoots', size: 180 })
 
-assert.equal(routes.size, 7, 'the plugin registers seven Fetch routes')
-for (const path of ['/api/dsh-pet/pets', '/api/dsh-pet/sprite', '/api/dsh-pet/preview', '/api/dsh-pet/install', '/api/dsh-pet/remove', '/api/dsh-pet/codex-pets', '/api/dsh-pet/import-codex']) {
+assert.equal(routes.size, 8, 'the plugin registers eight Fetch routes')
+for (const path of ['/api/dsh-pet/pets', '/api/dsh-pet/sprite', '/api/dsh-pet/preview', '/api/dsh-pet/install', '/api/dsh-pet/remove', '/api/dsh-pet/codex-pets', '/api/dsh-pet/import-codex', '/api/dsh-pet/focus']) {
   assert.ok(routes.has(path), `route ${path} is registered`)
 }
 

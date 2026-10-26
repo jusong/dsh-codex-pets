@@ -47,7 +47,7 @@ const codexPets = join(codex, 'pets')
 mkdirSync(join(project, 'lib'), { recursive: true })
 mkdirSync(pets)
 mkdirSync(codexPets, { recursive: true })
-for (const file of ['index.js', 'codex-pet.js', 'pet-store.js']) copyFileSync(join(ROOT, 'lib', file), join(project, 'lib', file))
+for (const file of ['index.js', 'codex-pet.js', 'pet-store.js', 'session-ball.js']) copyFileSync(join(ROOT, 'lib', file), join(project, 'lib', file))
 symlinkSync(join(ROOT, 'node_modules'), join(project, 'node_modules'))
 
 function putPet(dir, id, name, sheet, extra = {}) {

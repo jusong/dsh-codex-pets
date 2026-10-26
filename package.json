@@ -1,6 +1,6 @@
 {
   "name": "dsh-pet",
-  "version": "0.3.2",
+  "version": "0.5.0",
   "private": true,
   "description": "A floating desktop pet for DSH Desktop (macOS): always on top, pick a pet and set its size in Settings.",
   "type": "module",

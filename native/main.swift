@@ -259,6 +259,8 @@ final class SpritePlayer {
     private var dragAnimation: Playing?
     private var lookFrame: (row: Int, column: Int)?
     private var reacting = false
+    /// Keep the pet in its running row while a listed session is working.
+    private var workRunning = false
     private var idleElapsed = 0.0
     private var idleWait = 0.0
     private var idleCursor = 0
@@ -389,13 +391,14 @@ final class SpritePlayer {
         if active.advance(by: delta) {
             animation = nil
             reacting = false
-            play(manifest.idle, loop: true)
+            resumeAfterOneShot()
             return
         }
         animation = active
         // The idle rows barely move on their own, so every few seconds the
-        // pet takes a short turn at another row.
-        if active.animation.name == manifest.idle {
+        // pet takes a short turn at another row. Skip that while a session
+        // is keeping the pet in its running row.
+        if !workRunning, active.animation.name == manifest.idle {
             idleElapsed += delta
             if idleElapsed >= idleWait {
                 idleElapsed = 0
@@ -404,6 +407,23 @@ final class SpritePlayer {
             }
         }
         draw()
+    }
+
+    /// The gait used while work is in progress: the same row as dragging right.
+    private var workAnimationName: String {
+        if manifest.animations[manifest.dragRight] != nil { return manifest.dragRight }
+        if manifest.animations["running"] != nil { return "running" }
+        return manifest.idle
+    }
+
+    private var jumpAnimationName: String {
+        if manifest.animations["jumping"] != nil { return "jumping" }
+        return manifest.reactName
+    }
+
+    private func resumeAfterOneShot() {
+        if workRunning { play(workAnimationName, loop: true) }
+        else { play(manifest.idle, loop: true) }
     }
 
     private func pickIdleWait() -> Double {
@@ -469,7 +489,7 @@ final class SpritePlayer {
             sequence.index += 1
             if sequence.index >= sequence.plan.count {
                 self.sequence = nil
-                play(manifest.idle, loop: true)
+                resumeAfterOneShot()
                 if let kind = manifest.splash { splash(kind: kind) }
                 return
             }
@@ -487,7 +507,7 @@ final class SpritePlayer {
         stopAll()
         lookFrame = nil
         guard manifest.animations[manifest.reactName] != nil else {
-            play(manifest.idle, loop: true)
+            resumeAfterOneShot()
             return
         }
         reacting = true
@@ -498,7 +518,35 @@ final class SpritePlayer {
     func interrupt() {
         stopAll()
         lookFrame = nil
-        play(manifest.idle, loop: true)
+        resumeAfterOneShot()
+    }
+
+    /// Stay in the drag-right gait while sessions are working.
+    func setWorkRunning(_ on: Bool) {
+        workRunning = on
+        if on { lookFrame = nil }
+        guard dragAnimation == nil, sequence == nil else { return }
+        if on {
+            if animation?.animation.name != workAnimationName {
+                play(workAnimationName, loop: true)
+            } else {
+                draw()
+            }
+        } else if animation?.animation.name == workAnimationName {
+            play(manifest.idle, loop: true)
+        }
+    }
+
+    /// Jump a few times when a listed session finishes, then resume work or idle.
+    func celebrateJumps(_ count: Int = 3) {
+        guard !reducedMotion else { return }
+        let name = jumpAnimationName
+        guard let spec = manifest.animations[name], count > 0 else { return }
+        lookFrame = nil
+        reacting = false
+        dragAnimation = nil
+        sequence = Sequence(plan: Array(repeating: spec, count: count))
+        playStep()
     }
 
     private func stopAll() {
@@ -512,7 +560,7 @@ final class SpritePlayer {
         guard let right else {
             guard dragAnimation != nil else { return }
             dragAnimation = nil
-            applyState(animation?.animation.name ?? manifest.idle)
+            applyState(animation?.animation.name ?? (workRunning ? workAnimationName : manifest.idle))
             draw()
             return
         }
@@ -525,11 +573,13 @@ final class SpritePlayer {
 
     func endDrag() {
         dragAnimation = nil
-        play(manifest.idle, loop: true)
+        resumeAfterOneShot()
     }
 
     /// Look in a direction: 0 degrees is straight up, growing clockwise.
     func look(degrees: Double) {
+        // A working pet is already mid-stride; staring would replace the gait.
+        guard !workRunning else { return }
         guard !manifest.lookRows.isEmpty else { return }
         let count = manifest.lookCount
         // Rounded the way the browser engine's Math.round does.
@@ -551,12 +601,14 @@ final class SpritePlayer {
 
     // -- drawing -----------------------------------------------------------
 
-    /// A show beats a drag, a drag beats a reaction, a reaction beats the
-    /// gaze, and the gaze beats the animation.
+    /// A show beats a drag, a drag beats a reaction, work-running beats the
+    /// gaze (same idea as a drag: the body is moving), a reaction beats the
+    /// gaze, and the gaze beats a quiet idle animation.
     private func draw() {
         if sequence != nil, let active = animation { return show(active.animation.row, active.frame) }
         if let drag = dragAnimation { return show(drag.animation.row, drag.frame) }
         if reacting, let active = animation { return show(active.animation.row, active.frame) }
+        if workRunning, let active = animation { return show(active.animation.row, active.frame) }
         if let look = lookFrame { return show(look.row, look.column) }
         if let active = animation { return show(active.animation.row, active.frame) }
         show(idleRow, 0)
@@ -681,6 +733,435 @@ final class SpritePlayer {
     }
 }
 
+/**
+ * The count under the pet, and the session list it opens.
+ *
+ * It only takes clicks that land on the ball or a row. Everywhere else the
+ * click falls through to the pet, which is what starts a drag.
+ */
+final class SessionChrome: NSView {
+    static let badge: CGFloat = 36
+    static let listWidth: CGFloat = 300
+    static let rowHeight: CGFloat = 48
+
+    struct Item {
+        let id: String
+        let title: String
+        let status: String
+    }
+
+    var onToggle: (() -> Void)?
+    var onOpen: ((String) -> Void)?
+
+    private var items: [Item] = []
+    private var expanded = false
+    private var badgeFrame = CGRect.zero
+    private var listFrame = CGRect.zero
+    private var hoveredIndex: Int?
+    /// Skips rebuilding the rows when nothing in them changed, so a running
+    /// session's spinner is not restarted on every layout.
+    private var renderedSignature = ""
+    private var tracking: NSTrackingArea?
+    private let badgeLayer = CALayer()
+    private let countLayer = CATextLayer()
+    private let chevron = CAShapeLayer()
+    /// Soft halo plus a light that travels the ball's edge while work is in progress.
+    private let activityHost = CALayer()
+    private let activityGlow = CAShapeLayer()
+    /// Stays still so a wide pill does not tumble. The gradient inside it turns.
+    private let sweepHost = CALayer()
+    private let activitySweep = CAGradientLayer()
+    private let activityMask = CAShapeLayer()
+    private let listLayer = CALayer()
+
+    private static let activityHue = NSColor(calibratedRed: 0.23, green: 0.48, blue: 1, alpha: 1)
+
+    /// `1/5` is one session still working out of five. Once none are working, just `5`.
+    private func progressLabel() -> String {
+        let total = items.count
+        guard total > 0 else { return "" }
+        let running = items.reduce(0) { $0 + ($1.status == "running" ? 1 : 0) }
+        if running == 0 { return "\(total)" }
+        return "\(running)/\(total)"
+    }
+
+    private func rowIndex(at local: NSPoint) -> Int? {
+        guard expanded, listFrame.contains(local) else { return nil }
+        let index = Int((listFrame.maxY - local.y) / Self.rowHeight)
+        guard index >= 0, index < items.count else { return nil }
+        return index
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.masksToBounds = false
+        badgeLayer.backgroundColor = NSColor.white.cgColor
+        badgeLayer.shadowColor = NSColor.black.cgColor
+        badgeLayer.shadowOpacity = 0.16
+        badgeLayer.shadowRadius = 8
+        badgeLayer.shadowOffset = CGSize(width: 0, height: 1)
+        countLayer.alignmentMode = .center
+        countLayer.truncationMode = .end
+        countLayer.isWrapped = false
+        countLayer.foregroundColor = NSColor(white: 0.32, alpha: 1).cgColor
+        countLayer.font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        countLayer.fontSize = 14
+        let hue = Self.activityHue
+        activityGlow.fillColor = nil
+        activityGlow.strokeColor = hue.withAlphaComponent(0.45).cgColor
+        activityGlow.lineWidth = 4
+        activityGlow.lineCap = .round
+        activitySweep.type = .conic
+        activitySweep.startPoint = CGPoint(x: 0.5, y: 0.5)
+        activitySweep.endPoint = CGPoint(x: 0.5, y: 0)
+        activitySweep.colors = [
+            hue.withAlphaComponent(0).cgColor,
+            hue.withAlphaComponent(0.08).cgColor,
+            hue.withAlphaComponent(0.55).cgColor,
+            hue.cgColor,
+        ]
+        activitySweep.locations = [0, 0.2, 0.72, 1]
+        activityMask.fillColor = nil
+        activityMask.strokeColor = NSColor.white.cgColor
+        activityMask.lineWidth = 2.25
+        activityMask.lineCap = .round
+        sweepHost.mask = activityMask
+        sweepHost.addSublayer(activitySweep)
+        activityHost.isHidden = true
+        activityHost.addSublayer(activityGlow)
+        activityHost.addSublayer(sweepHost)
+        badgeLayer.addSublayer(activityHost)
+        badgeLayer.addSublayer(countLayer)
+        chevron.strokeColor = NSColor(white: 0.32, alpha: 1).cgColor
+        chevron.fillColor = nil
+        chevron.lineWidth = 1.8
+        chevron.lineCap = .round
+        chevron.lineJoin = .round
+        chevron.isHidden = true
+        badgeLayer.addSublayer(chevron)
+        listLayer.backgroundColor = NSColor.white.cgColor
+        listLayer.shadowColor = NSColor.black.cgColor
+        listLayer.shadowOpacity = 0.14
+        listLayer.shadowRadius = 16
+        listLayer.shadowOffset = CGSize(width: 0, height: 2)
+        listLayer.isHidden = true
+        layer?.addSublayer(listLayer)
+        layer?.addSublayer(badgeLayer)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    func render(items: [Item], expanded: Bool, scale: CGFloat) {
+        self.items = items
+        self.expanded = expanded
+        if let hoveredIndex, hoveredIndex >= items.count { self.hoveredIndex = nil }
+        let bounds = self.bounds
+        let signature = "\(Int(bounds.width))x\(Int(bounds.height))|\(expanded)|\(Int(scale * 10))|"
+            + items.map { "\($0.id)\u{1}\($0.status)\u{1}\($0.title)" }.joined(separator: "\u{2}")
+        if signature == renderedSignature { return }
+        renderedSignature = signature
+        let chinese = Locale.preferredLanguages.first?.hasPrefix("zh") == true
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        var spinners: [CAShapeLayer] = []
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let badge = Self.badge
+        // `1/5` is wider than the circle, so the ball grows into a pill.
+        // A finished list is one number and stays a circle.
+        let label = expanded ? "" : progressLabel()
+        let fontSize: CGFloat = label.contains("/") ? 13 : 15
+        let font = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .semibold)
+        let textWidth = label.isEmpty ? badge : ceil((label as NSString).size(withAttributes: [.font: font]).width)
+        let badgeW = max(badge, textWidth + 16)
+        // The chrome view is the strip under the pet, so the ball sits at its top.
+        badgeFrame = CGRect(x: bounds.midX - badgeW / 2, y: bounds.height - 6 - badge, width: badgeW, height: badge)
+        badgeLayer.frame = badgeFrame
+        badgeLayer.cornerRadius = badge / 2
+        countLayer.contentsScale = scale
+        countLayer.font = font
+        countLayer.fontSize = fontSize
+        countLayer.frame = CGRect(x: 0, y: (badge - 18) / 2, width: badgeW, height: 18)
+        countLayer.string = label
+        chevron.isHidden = !expanded
+        chevron.frame = badgeLayer.bounds
+        let mark = CGMutablePath()
+        let mid = badgeW / 2
+        mark.move(to: CGPoint(x: mid - 6, y: 15))
+        mark.addLine(to: CGPoint(x: mid, y: 21))
+        mark.addLine(to: CGPoint(x: mid + 6, y: 15))
+        chevron.path = mark
+
+        listLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
+        listLayer.isHidden = !expanded || items.isEmpty
+        listFrame = .zero
+        if expanded && !items.isEmpty {
+            let listW = min(Self.listWidth, bounds.width - 16)
+            let listH = Self.rowHeight * CGFloat(items.count)
+            listFrame = CGRect(x: bounds.midX - listW / 2, y: badgeFrame.minY - 8 - listH, width: listW, height: listH)
+            listLayer.frame = listFrame
+            listLayer.cornerRadius = items.count == 1 ? min(24, listH / 2) : 18
+            let textX: CGFloat = 36
+            for (index, item) in items.enumerated() {
+                let row = CALayer()
+                let inset: CGFloat = 4
+                row.frame = CGRect(
+                    x: inset,
+                    y: listH - Self.rowHeight * CGFloat(index + 1) + inset / 2,
+                    width: listW - inset * 2,
+                    height: Self.rowHeight - inset
+                )
+                row.cornerRadius = 10
+                row.backgroundColor = index == hoveredIndex
+                    ? NSColor(white: 0.93, alpha: 1).cgColor
+                    : NSColor.clear.cgColor
+                let running = item.status == "running"
+                let slot = CGRect(x: 10, y: (row.bounds.height - 14) / 2, width: 14, height: 14)
+                if running {
+                    spinners.append(Self.spinner(in: slot, scale: scale, onto: row))
+                } else {
+                    let dot = CALayer()
+                    let dotSize: CGFloat = 8
+                    dot.frame = CGRect(
+                        x: slot.midX - dotSize / 2,
+                        y: slot.midY - dotSize / 2,
+                        width: dotSize,
+                        height: dotSize
+                    )
+                    dot.cornerRadius = dotSize / 2
+                    dot.backgroundColor = NSColor.systemGreen.cgColor
+                    row.addSublayer(dot)
+                }
+                let title = CATextLayer()
+                title.contentsScale = scale
+                title.frame = CGRect(x: textX, y: 22, width: row.bounds.width - textX - 12, height: 18)
+                title.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
+                title.fontSize = 14
+                title.foregroundColor = NSColor(white: 0.1, alpha: 1).cgColor
+                title.truncationMode = .end
+                title.string = item.title.isEmpty ? (chinese ? "未命名会话" : "Untitled") : item.title
+                let status = CATextLayer()
+                status.contentsScale = scale
+                status.frame = CGRect(x: textX, y: 5, width: row.bounds.width - textX - 12, height: 16)
+                status.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+                status.fontSize = 12
+                status.foregroundColor = NSColor(white: 0.5, alpha: 1).cgColor
+                status.truncationMode = .end
+                status.string = running ? (chinese ? "正在思考" : "Thinking") : (chinese ? "已完成" : "Done")
+                row.addSublayer(title)
+                row.addSublayer(status)
+                listLayer.addSublayer(row)
+            }
+        }
+        CATransaction.commit()
+        if !reduceMotion {
+            for spinner in spinners {
+                let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+                spin.fromValue = 0
+                spin.toValue = CGFloat.pi * 2
+                spin.duration = 1.15
+                spin.repeatCount = .infinity
+                spin.timingFunction = CAMediaTimingFunction(name: .linear)
+                spinner.add(spin, forKey: "spin")
+            }
+        }
+        syncActivityRing(reduceMotion: reduceMotion)
+        installTracking()
+    }
+
+    /// A soft halo, and a light that travels the ball's edge, while any session is working.
+    /// A finished list leaves the ball still. Reduced motion keeps the halo, without the sweep.
+    private func syncActivityRing(reduceMotion: Bool) {
+        let busy = items.contains { $0.status == "running" }
+        guard busy else {
+            activityHost.isHidden = true
+            activityGlow.removeAnimation(forKey: "breathe")
+            activitySweep.removeAnimation(forKey: "orbit")
+            badgeLayer.removeAnimation(forKey: "lift")
+            badgeLayer.shadowColor = NSColor.black.cgColor
+            badgeLayer.shadowOpacity = 0.16
+            badgeLayer.shadowRadius = 8
+            return
+        }
+        activityHost.isHidden = false
+        activityHost.frame = badgeLayer.bounds
+        let bounds = activityHost.bounds
+        activityGlow.frame = bounds
+        sweepHost.frame = bounds
+        activityMask.frame = bounds
+        // Larger than the ball, so turning the gradient never uncovers the ring.
+        let side = hypot(bounds.width, bounds.height)
+        activitySweep.bounds = CGRect(x: 0, y: 0, width: side, height: side)
+        activitySweep.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        let glowRect = bounds.insetBy(dx: 1.25, dy: 1.25)
+        let ringRect = bounds.insetBy(dx: 2.75, dy: 2.75)
+        activityGlow.path = CGPath(
+            roundedRect: glowRect,
+            cornerWidth: glowRect.height / 2,
+            cornerHeight: glowRect.height / 2,
+            transform: nil
+        )
+        activityMask.path = CGPath(
+            roundedRect: ringRect,
+            cornerWidth: ringRect.height / 2,
+            cornerHeight: ringRect.height / 2,
+            transform: nil
+        )
+        badgeLayer.shadowColor = Self.activityHue.cgColor
+        badgeLayer.shadowRadius = 10
+        if reduceMotion {
+            activitySweep.isHidden = true
+            activitySweep.removeAnimation(forKey: "orbit")
+            activityGlow.removeAnimation(forKey: "breathe")
+            activityGlow.opacity = 0.4
+            badgeLayer.removeAnimation(forKey: "lift")
+            badgeLayer.shadowOpacity = 0.28
+            return
+        }
+        activitySweep.isHidden = false
+        if activitySweep.animation(forKey: "orbit") == nil {
+            let orbit = CABasicAnimation(keyPath: "transform.rotation.z")
+            orbit.fromValue = 0
+            orbit.toValue = CGFloat.pi * 2
+            orbit.duration = 1.8
+            orbit.repeatCount = .infinity
+            orbit.timingFunction = CAMediaTimingFunction(name: .linear)
+            activitySweep.add(orbit, forKey: "orbit")
+        }
+        if activityGlow.animation(forKey: "breathe") == nil {
+            let breathe = CABasicAnimation(keyPath: "opacity")
+            breathe.fromValue = 0.2
+            breathe.toValue = 0.7
+            breathe.duration = 1.4
+            breathe.autoreverses = true
+            breathe.repeatCount = .infinity
+            breathe.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            activityGlow.add(breathe, forKey: "breathe")
+        }
+        if badgeLayer.animation(forKey: "lift") == nil {
+            let lift = CABasicAnimation(keyPath: "shadowOpacity")
+            lift.fromValue = 0.16
+            lift.toValue = 0.45
+            lift.duration = 1.4
+            lift.autoreverses = true
+            lift.repeatCount = .infinity
+            lift.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            badgeLayer.add(lift, forKey: "lift")
+        }
+    }
+
+    /// A faint track and a glowing arc. The arc turns while the agent is working.
+    private static func spinner(in slot: CGRect, scale: CGFloat, onto row: CALayer) -> CAShapeLayer {
+        let center = CGPoint(x: slot.width / 2, y: slot.height / 2)
+        let track = CAShapeLayer()
+        track.frame = slot
+        track.contentsScale = scale
+        track.path = CGPath(ellipseIn: CGRect(x: center.x - 5.5, y: center.y - 5.5, width: 11, height: 11), transform: nil)
+        track.fillColor = nil
+        track.strokeColor = NSColor(white: 0.86, alpha: 1).cgColor
+        track.lineWidth = 1.75
+        row.addSublayer(track)
+
+        let spinner = CAShapeLayer()
+        spinner.frame = slot
+        spinner.contentsScale = scale
+        let path = CGMutablePath()
+        path.addArc(center: center, radius: 5.5, startAngle: -.pi / 2, endAngle: .pi, clockwise: false)
+        spinner.path = path
+        spinner.fillColor = nil
+        spinner.strokeColor = activityHue.cgColor
+        spinner.lineWidth = 1.75
+        spinner.lineCap = .round
+        spinner.shadowColor = activityHue.cgColor
+        spinner.shadowRadius = 2
+        spinner.shadowOpacity = 0.85
+        spinner.shadowOffset = .zero
+        row.addSublayer(spinner)
+        return spinner
+    }
+
+    /// The list is gone, so drop the hover tracking it installed.
+    func dismiss() {
+        activityHost.isHidden = true
+        activityGlow.removeAnimation(forKey: "breathe")
+        activitySweep.removeAnimation(forKey: "orbit")
+        badgeLayer.removeAnimation(forKey: "lift")
+        if tracking == nil && hoveredIndex == nil && renderedSignature.isEmpty { return }
+        let restoreCursor = hoveredIndex != nil
+        renderedSignature = ""
+        hoveredIndex = nil
+        if let tracking { removeTrackingArea(tracking) }
+        tracking = nil
+        if restoreCursor { NSCursor.arrow.set() }
+    }
+
+    private func installTracking() {
+        let wasTracking = tracking != nil
+        if let tracking { removeTrackingArea(tracking) }
+        self.tracking = nil
+        guard expanded, listFrame.width > 0, listFrame.height > 0 else {
+            hoveredIndex = nil
+            if wasTracking { NSCursor.arrow.set() }
+            return
+        }
+        let area = NSTrackingArea(
+            rect: listFrame,
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    private func applyHover() {
+        guard let rows = listLayer.sublayers else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (index, row) in rows.enumerated() {
+            row.backgroundColor = index == hoveredIndex
+                ? NSColor(white: 0.93, alpha: 1).cgColor
+                : NSColor.clear.cgColor
+        }
+        CATransaction.commit()
+        if hoveredIndex == nil { NSCursor.arrow.set() }
+        else { NSCursor.pointingHand.set() }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        if badgeFrame.contains(local) { return self }
+        if expanded && listFrame.contains(local) { return self }
+        return nil
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let index = rowIndex(at: convert(event.locationInWindow, from: nil))
+        guard index != hoveredIndex else { return }
+        hoveredIndex = index
+        applyHover()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard hoveredIndex != nil else { return }
+        hoveredIndex = nil
+        applyHover()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let local = convert(event.locationInWindow, from: nil)
+        if badgeFrame.contains(local) {
+            onToggle?()
+            return
+        }
+        guard let index = rowIndex(at: local) else { return }
+        onOpen?(items[index].id)
+    }
+}
+
 /// The pet's content view: it takes the clicks and hands them to the
 /// controller.
 final class PetView: NSView {
@@ -696,6 +1177,7 @@ final class PetView: NSView {
 final class PetController: NSObject, NSApplicationDelegate {
     private var panel: NSPanel!
     private var player: SpritePlayer!
+    private var chrome: SessionChrome!
     private var petDir = ""
     /// Print how the pet's manifest reads against its atlas, then exit.
     private var describe = false
@@ -850,6 +1332,7 @@ final class PetController: NSObject, NSApplicationDelegate {
         panel.worksWhenModal = true
         panel.isFloatingPanel = true
         panel.becomesKeyOnlyIfNeeded = true
+        panel.acceptsMouseMovedEvents = true
 
         let view = PetView(frame: NSRect(x: 0, y: 0, width: size, height: size))
         view.controller = self
@@ -861,6 +1344,20 @@ final class PetController: NSObject, NSApplicationDelegate {
         }
         shownEdge = size
         player.layout(in: view.bounds, edge: size, scale: panel.backingScaleFactor)
+        chrome = SessionChrome(frame: .zero)
+        chrome.onToggle = { [weak self] in
+            guard let self else { return }
+            self.sessionsExpanded.toggle()
+            if self.glideTimer == nil { self.relayoutSettled() }
+        }
+        chrome.onOpen = { [weak self] id in
+            guard let self else { return }
+            self.sessionsExpanded = false
+            if self.glideTimer == nil { self.relayoutSettled() }
+            self.activateDSH()
+            FileHandle.standardOutput.write(Data("open \(id)\n".utf8))
+        }
+        view.addSubview(chrome)
         panel.contentView = view
         panel.orderFrontRegardless()
         NotificationCenter.default.addObserver(
@@ -907,8 +1404,10 @@ final class PetController: NSObject, NSApplicationDelegate {
         // Measured from the pet's eyes, a little above the middle, in a
         // top-left space. While the pet is being resized the window is
         // bigger than the pet, which sits in its middle.
-        let dx = (mouse.x - frame.minX) - frame.width / 2
-        let dy = (frame.height - (mouse.y - frame.minY)) - ((frame.height - size) / 2 + size * 0.42)
+        let slot = petSlot(in: NSRect(origin: .zero, size: frame.size), edge: shownEdge)
+        let dx = (mouse.x - frame.minX) - slot.midX
+        let eyeFromTop = (frame.height - slot.maxY) + slot.height * 0.42
+        let dy = (frame.height - (mouse.y - frame.minY)) - eyeFromTop
         guard hypot(dx, dy) <= size * 1.4 else {
             player.lookOut()
             return
@@ -1149,20 +1648,26 @@ final class PetController: NSObject, NSApplicationDelegate {
      */
     private func watchCommands() {
         var pending = Data()
-        FileHandle.standardInput.readabilityHandler = { [weak self] handle in
-            let chunk = handle.availableData
-            // End of input: nobody is going to write any more.
-            guard !chunk.isEmpty else {
+        let handle = FileHandle.standardInput
+        let fd = handle.fileDescriptor
+        let flags = fcntl(fd, F_GETFL)
+        // A blocking read in this handler waits until the host closes the
+        // pipe, so a short line never comes back and the ball stays off.
+        // Non-blocking: take whatever is already there, and keep listening.
+        _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+        handle.readabilityHandler = { [weak self] handle in
+            var buffer = [UInt8](repeating: 0, count: 65_536)
+            let count = read(handle.fileDescriptor, &buffer, buffer.count)
+            if count == 0 {
                 handle.readabilityHandler = nil
                 return
             }
-            pending.append(chunk)
+            guard count > 0 else { return }
+            pending.append(buffer, count: count)
             while let newline = pending.firstIndex(of: 0x0A) {
                 let line = String(decoding: pending[pending.startIndex..<newline], as: UTF8.self)
                 pending.removeSubrange(pending.startIndex...newline)
-                let parts = line.split(separator: " ")
-                guard parts.count == 2, parts[0] == "size", let value = Double(parts[1]) else { continue }
-                DispatchQueue.main.async { self?.resize(to: CGFloat(value)) }
+                DispatchQueue.main.async { self?.handleCommand(line) }
             }
         }
     }
@@ -1174,6 +1679,15 @@ final class PetController: NSObject, NSApplicationDelegate {
     private var settleTimer: Timer?
     /// The size the pet is drawn at this frame, on its way to `size`.
     private var shownEdge: CGFloat = 0
+    /// What the ball is listing. Empty means the ball is not drawn.
+    private var sessionItems: [SessionChrome.Item] = []
+    private var sessionsExpanded = false
+    /// The settings switch that draws the ball under the pet.
+    private var sessionChromeOn = false
+    /// The settings switch that puts the pet in running while work is on.
+    private var sessionMotionOn = false
+    /// Session ids that were running last time the host sent a list.
+    private var previouslyRunning: Set<String> = []
     private var glideTimer: Timer?
     private var glideClock: CFTimeInterval = 0
     /// Time constant of the glide, in seconds.
@@ -1195,16 +1709,24 @@ final class PetController: NSObject, NSApplicationDelegate {
         let edge = min(Self.maxEdge, max(Self.minEdge, requested.rounded()))
         guard edge != size, let view = panel.contentView else { return }
 
-        if panel.frame.width < Self.maxEdge {
-            // The pet keeps its current size and place; only the room around
-            // it grows. The window may reach past the screen's edge for a
-            // moment -- the fit below pulls it back.
-            let old = panel.frame
-            let wide = NSRect(x: old.midX - Self.maxEdge / 2, y: old.midY - Self.maxEdge / 2,
-                              width: Self.maxEdge, height: Self.maxEdge)
-            shownEdge = size
-            panel.setFrame(wide, display: false)
-            player.layout(in: view.bounds, edge: shownEdge, scale: panel.backingScaleFactor)
+        if chromeHeight() == 0 {
+            if panel.frame.width < Self.maxEdge {
+                // The pet keeps its current size and place; only the room around
+                // it grows. The window may reach past the screen's edge for a
+                // moment -- the fit below pulls it back.
+                let old = panel.frame
+                let wide = NSRect(x: old.midX - Self.maxEdge / 2, y: old.midY - Self.maxEdge / 2,
+                                  width: Self.maxEdge, height: Self.maxEdge)
+                shownEdge = size
+                panel.setFrame(wide, display: false)
+                player.layout(in: view.bounds, edge: shownEdge, scale: panel.backingScaleFactor)
+            }
+        } else {
+            let room = windowSize(forPetEdge: Self.maxEdge)
+            if panel.frame.width < room.width - 0.5 || panel.frame.height < room.height - 0.5 {
+                shownEdge = size
+                placeWindow(drawnEdge: shownEdge, reservedEdge: Self.maxEdge)
+            }
         }
 
         size = edge
@@ -1227,32 +1749,165 @@ final class PetController: NSObject, NSApplicationDelegate {
         // that moves mid-glide just changes where it is heading.
         let gap = size - shownEdge
         shownEdge = abs(gap) < 0.25 ? size : shownEdge + gap * (1 - CGFloat(exp(-delta / Self.glideTau)))
-        player.layout(in: view.bounds, edge: shownEdge, scale: panel.backingScaleFactor)
+        let slot = chromeHeight() == 0 ? view.bounds : petSlot(in: view.bounds, edge: shownEdge)
+        player.layout(in: slot, edge: shownEdge, scale: panel.backingScaleFactor)
         guard shownEdge == size else { return }
         glideTimer?.invalidate()
         glideTimer = nil
         settleTimer = Timer.scheduledTimer(withTimeInterval: Self.settleDelay, repeats: false) { [weak self] _ in
-            self?.fitWindowToPet()
+            self?.relayoutSettled()
         }
     }
 
     /// Shrink the window around the pet once the size has stopped changing.
-    private func fitWindowToPet() {
+    ///
+    /// With the session ball on, the window is the pet plus the strip under
+    /// it, and the pet stays where it was on screen.
+    private func relayoutSettled() {
         settleTimer = nil
-        guard let view = panel.contentView, panel.frame.width != size else { return }
-        let old = panel.frame
-        var origin = NSPoint(x: old.midX - size / 2, y: old.midY - size / 2)
-        // A pet that grew past the edge of its screen is pulled back in.
+        guard panel?.contentView != nil else { return }
+        placeWindow(drawnEdge: size, reservedEdge: size)
+        saveOrigin()
+    }
+
+    private func fitWindowToPet() { relayoutSettled() }
+
+    // -- session ball ------------------------------------------------------
+
+    /// How tall the strip under the pet is. Zero when there is nothing to list.
+    private func chromeHeight() -> CGFloat {
+        guard sessionChromeOn, !sessionItems.isEmpty else { return 0 }
+        let topGap: CGFloat = 6
+        let bottom: CGFloat = 10
+        if !sessionsExpanded { return topGap + SessionChrome.badge + bottom }
+        return topGap + SessionChrome.badge + 8 + SessionChrome.rowHeight * CGFloat(sessionItems.count) + bottom
+    }
+
+    /// The window's size for a pet of `edge`, including the ball when it is on.
+    private func windowSize(forPetEdge edge: CGFloat) -> NSSize {
+        let chrome = chromeHeight()
+        if chrome == 0 { return NSSize(width: edge, height: edge) }
+        return NSSize(width: max(edge, SessionChrome.listWidth + 16), height: edge + chrome)
+    }
+
+    /**
+     * Where the pet is drawn.
+     *
+     * With the ball off it is centred, which is what the resize glide uses.
+     * With the ball on it is pinned to the top, and the ball hangs below.
+     */
+    private func petSlot(in bounds: CGRect, edge: CGFloat) -> CGRect {
+        if chromeHeight() == 0 {
+            return CGRect(x: bounds.midX - edge / 2, y: bounds.midY - edge / 2, width: edge, height: edge)
+        }
+        return CGRect(x: bounds.midX - edge / 2, y: bounds.maxY - edge, width: edge, height: edge)
+    }
+
+    /// The pet's centre in screen points, from where it is drawn right now.
+    private func petCenterOnScreen() -> NSPoint {
+        let frame = panel.frame
+        let slot = petSlot(in: NSRect(origin: .zero, size: frame.size), edge: shownEdge > 0 ? shownEdge : size)
+        return NSPoint(x: frame.minX + slot.midX, y: frame.minY + slot.midY)
+    }
+
+    /**
+     * Move the window so the pet stays put.
+     *
+     * `reservedEdge` is how much vertical room the pet is given (the largest
+     * size while a resize is gliding, the real size once it has settled).
+     * `drawnEdge` is the size it is drawn at inside that room.
+     */
+    private func placeWindow(drawnEdge: CGFloat, reservedEdge: CGFloat) {
+        guard let view = panel.contentView else { return }
+        let center = petCenterOnScreen()
+        let window = windowSize(forPetEdge: reservedEdge)
+        let chrome = chromeHeight()
+        let slotY = chrome == 0 ? (window.height - drawnEdge) / 2 : window.height - drawnEdge
+        let centerY = slotY + drawnEdge / 2
+        var origin = NSPoint(x: center.x - window.width / 2, y: center.y - centerY)
         if let visible = (panel.screen ?? NSScreen.main)?.visibleFrame {
-            origin.x = min(max(origin.x, visible.minX), max(visible.minX, visible.maxX - size))
-            origin.y = min(max(origin.y, visible.minY), max(visible.minY, visible.maxY - size))
+            origin.x = min(max(origin.x, visible.minX), max(visible.minX, visible.maxX - window.width))
+            origin.y = min(max(origin.y, visible.minY), max(visible.minY, visible.maxY - window.height))
         }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        panel.setFrame(NSRect(x: origin.x, y: origin.y, width: size, height: size), display: false)
-        player.layout(in: view.bounds, edge: size, scale: panel.backingScaleFactor)
+        panel.setFrame(NSRect(origin: origin, size: window), display: false)
+        shownEdge = drawnEdge
+        let slot = petSlot(in: view.bounds, edge: drawnEdge)
+        player.layout(in: slot, edge: drawnEdge, scale: panel.backingScaleFactor)
+        chromeView(in: view)
         CATransaction.commit()
-        saveOrigin()
+    }
+
+    private func chromeView(in view: NSView) {
+        let height = chromeHeight()
+        chrome.frame = NSRect(x: 0, y: 0, width: view.bounds.width, height: height)
+        chrome.isHidden = height == 0
+        if height > 0 { chrome.render(items: sessionItems, expanded: sessionsExpanded, scale: panel.backingScaleFactor) }
+        else { chrome.dismiss() }
+    }
+
+    /// One line from the host: `size N`, `motion on|off`, `chrome on|off`,
+    /// or `sessions` plus a JSON array.
+    private func handleCommand(_ line: String) {
+        if line.hasPrefix("size ") {
+            if let value = Double(line.dropFirst(5).trimmingCharacters(in: .whitespaces)) {
+                resize(to: CGFloat(value))
+            }
+            return
+        }
+        if line == "motion on" || line == "motion off" {
+            let on = line.hasSuffix(" on")
+            sessionMotionOn = on
+            if !on {
+                previouslyRunning = []
+                player.setWorkRunning(false)
+            } else {
+                applySessionMotion(sessionItems)
+            }
+            return
+        }
+        if line == "chrome on" || line == "chrome off" {
+            let on = line.hasSuffix(" on")
+            guard sessionChromeOn != on else { return }
+            sessionChromeOn = on
+            if !on { sessionsExpanded = false }
+            if glideTimer == nil { relayoutSettled() }
+            return
+        }
+        guard line.hasPrefix("sessions ") else { return }
+        let raw = String(line.dropFirst("sessions ".count))
+        guard let data = raw.data(using: .utf8),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
+        var next: [SessionChrome.Item] = []
+        for row in rows {
+            guard let id = row["id"] as? String, !id.isEmpty, id.count <= 200,
+                  !id.contains("\n"), !id.contains(" ") else { continue }
+            next.append(SessionChrome.Item(
+                id: id,
+                title: (row["title"] as? String) ?? "",
+                status: (row["status"] as? String) ?? "idle"
+            ))
+        }
+        applySessionMotion(next)
+        sessionItems = next
+        if next.isEmpty { sessionsExpanded = false }
+        if glideTimer == nil { relayoutSettled() }
+    }
+
+    /// Put the pet in running while any listed session is working, and jump
+    /// three times when one that was working has finished.
+    private func applySessionMotion(_ next: [SessionChrome.Item]) {
+        guard sessionMotionOn else {
+            previouslyRunning = []
+            player.setWorkRunning(false)
+            return
+        }
+        let nowRunning = Set(next.filter { $0.status == "running" }.map(\.id))
+        let finished = previouslyRunning.subtracting(nowRunning)
+        previouslyRunning = nowRunning
+        if !finished.isEmpty { player.celebrateJumps(3) }
+        player.setWorkRunning(!nowRunning.isEmpty)
     }
 
     private func watchParent() {
