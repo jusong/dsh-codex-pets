@@ -50,7 +50,7 @@ dsh plugin --profile desktop add ./dsh-pet
 
 - 点画廊里的卡片切换宠物，上方的预览和尺寸滑块跟着变；
 - 在输入框里粘 codex-pets.net 的宠物 ID 或页面链接即可安装，装完排到「已安装」末尾；
-- 「从 Codex 导入」会把 `~/.codex/pets` 里还没导入的一次装进来；
+- 「从 Codex 导入」会把 `~/.codex/pets` 里还没导入的、以及 Codex 自带（打在 `ChatGPT.app` 里）的宠物一起装进来；
 - 用户装的宠物可以删除、拖拽排序；内置那只不能删。
 
 ## 配置

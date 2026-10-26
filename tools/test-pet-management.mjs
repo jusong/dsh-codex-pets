@@ -38,6 +38,31 @@ function webpVP8X(width, height, tag) {
 const v1 = (tag) => webpVP8X(1536, 1872, tag)
 const v2 = (tag) => webpVP8X(1536, 2288, tag)
 
+/** A minimal asar: the 16-byte pickle header, the JSON index, then the files. */
+function asarWith(files) {
+  const header = { files: {} }
+  const chunks = []
+  let offset = 0
+  for (const [path, bytes] of Object.entries(files)) {
+    const parts = path.split('/').filter(Boolean)
+    let node = header
+    for (const part of parts.slice(0, -1)) {
+      node.files[part] ??= { files: {} }
+      node = node.files[part]
+    }
+    node.files[parts.at(-1)] = { size: bytes.length, offset: `${offset}` }
+    chunks.push(bytes)
+    offset += bytes.length
+  }
+  const json = Buffer.from(JSON.stringify(header))
+  const head = Buffer.alloc(16)
+  head.writeUInt32LE(4, 0)
+  head.writeUInt32LE(8 + json.length, 4)
+  head.writeUInt32LE(4 + json.length, 8)
+  head.writeUInt32LE(json.length, 12)
+  return Buffer.concat([head, json, ...chunks])
+}
+
 // -- the world ---------------------------------------------------------------
 const base = mkdtempSync(join(tmpdir(), 'dsh-pet-manage-'))
 const project = join(base, 'project')
@@ -69,6 +94,16 @@ writeFileSync(join(pets, 'index.json'), JSON.stringify([
   { id: 'beta', name: 'Beta' },
   { id: 'gamma', name: 'Gamma' },
 ], null, 2))
+
+const appAsar = join(base, 'chatgpt', 'app.asar')
+mkdirSync(dirname(appAsar), { recursive: true })
+writeFileSync(appAsar, asarWith({
+  '/webview/assets/codex-spritesheet-v6-51045ae208c0.webp': v2('official-codex'),
+  '/webview/assets/bsod-spritesheet-v5-cc54136ce042.webp': v1('official-bsod'),
+  '/webview/assets/alpha-spritesheet-v1-aaaaaaaaaaaa.webp': v1('official-alpha'),
+  '/webview/assets/hoots-spritesheet-v8-bbbbbbbbbbbb.webp': BETA,
+  '/webview/assets/unrelated-asset-v1-cccccccccccc.webp': Buffer.from('not an atlas at all'),
+}))
 
 putPet(codexPets, 'wangcai', 'Wangcai', v2('wangcai'), { spriteVersionNumber: 2 })
 putPet(codexPets, 'beta-copy', 'Beta Copy', BETA)
@@ -108,6 +143,7 @@ const registryUrl = `http://127.0.0.1:${registry.address().port}`
 process.env.DSH_PET_REGISTRY = registryUrl
 process.env.CODEX_HOME = codex
 process.env.DSH_PET_USER_DIR = userPets
+process.env.DSH_PET_CODEX_ASAR = appAsar
 
 const store = await import(pathToFileURL(join(project, 'lib', 'pet-store.js')).href)
 const host = await import(pathToFileURL(join(project, 'lib', 'index.js')).href)
@@ -250,14 +286,25 @@ eq(JSON.parse(readFileSync(join(userPets, 'pets.json'), 'utf8')).slice(-1), [{ i
 console.log('import from Codex')
 let list = (await get('/api/dsh-pet/codex-pets')).body.pets
 const status = Object.fromEntries(list.map((p) => [p.folder, p.status]))
-eq(status, { 'Mixed Case': 'ready', 'beta-copy': 'installed', broken: 'failed', gamma: 'taken', wangcai: 'ready' }, 'each Codex pet says what importing would do')
+eq(status, {
+  'Mixed Case': 'ready', 'beta-copy': 'installed', broken: 'failed', gamma: 'taken', wangcai: 'ready',
+  // shipped inside ChatGPT.app rather than installed into ~/.codex/pets
+  alpha: 'taken', bsod: 'ready', codex: 'ready', hoots: 'installed',
+}, 'each Codex pet says what importing would do')
 eq(list.find((p) => p.folder === 'beta-copy').installedAs, 'beta', 'same art under the bundled name')
+const names = Object.fromEntries(list.map((p) => [p.id, p.name]))
+eq([names.codex, names.bsod, names.hoots], ['Codex', 'BSOD', 'Hoots'], 'the app pets carry their real names')
+eq(list.find((p) => p.id === 'alpha').status, 'taken', 'a shipped pet whose id is taken is not offered')
+eq(list.filter((p) => p.id === 'codex').length, 1, 'a pet in both places is listed once')
 
 r = await post('/api/dsh-pet/import-codex', {})
 eq(r.status, 200, 'import answers 200')
-eq(r.body.installed.map((p) => p.id).sort(), ['mixed-case', 'wangcai'], 'the new pets are imported')
+eq(r.body.installed.map((p) => p.id).sort(), ['bsod', 'codex', 'mixed-case', 'wangcai'], 'the new pets are imported, app pets included')
 ok(existsSync(join(userPets, 'wangcai', 'pet.json')), 'into the user store')
 ok(!existsSync(join(pets, 'wangcai')), 'not into the bundled tree')
+eq(JSON.parse(readFileSync(join(userPets, 'codex', 'pet.json'), 'utf8')).source, 'Codex app bundle (ChatGPT.app)',
+  'an app pet records where it came from')
+ok(existsSync(join(base, 'cache', 'dsh-pet', 'codex-app', 'codex', 'spritesheet.webp')), 'the atlas is extracted next to the user store')
 const orderAfter = JSON.parse(readFileSync(join(userPets, 'pets.json'), 'utf8')).map((e) => e.id)
 ok(orderAfter.indexOf('wangcai') > orderAfter.indexOf('remote-whale'), 'imported pets append after earlier installs')
 
@@ -265,8 +312,10 @@ r = await post('/api/dsh-pet/import-codex', {})
 eq(r.body.installed, [], 'importing again installs nothing')
 
 process.env.CODEX_HOME = join(base, 'no-such-codex')
-eq((await get('/api/dsh-pet/codex-pets')).body.pets, [], 'with no Codex folder there is nothing to list')
+process.env.DSH_PET_CODEX_ASAR = join(base, 'no-such-app.asar')
+eq((await get('/api/dsh-pet/codex-pets')).body.pets, [], 'with no Codex on this machine there is nothing to list')
 process.env.CODEX_HOME = codex
+process.env.DSH_PET_CODEX_ASAR = appAsar
 
 registry.close()
 r = await post('/api/dsh-pet/install', { source: 'remote-v2-again' })
