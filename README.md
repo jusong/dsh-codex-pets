@@ -24,7 +24,7 @@ DSH Desktop 的 macOS 桌面宠物：一只 DeepSeek 小鲸鱼浮在所有窗口
 dsh plugin --profile desktop add github:jusong/dsh-pet
 ```
 
-要固定版本就带上 tag，例如 `github:jusong/dsh-pet#v0.7.2`。
+要固定版本就带上 tag，例如 `github:jusong/dsh-pet#v0.7.3`。
 
 要改代码就用本地目录。这时 DSH 只建一个 `link:`，不会替这个 checkout 装依赖，得自己先装一次：
 
@@ -72,6 +72,25 @@ dsh plugin --profile desktop add ./dsh-pet
 
 - 想用现成的：在设置页安装，或者 `node tools/install-pet.mjs <id | 链接 | zip | 目录>`；
 - 想做自己的：把图集和 manifest 放进 `~/.dsh/pets/<id>/`；手上已有 Codex 宠物的话，`python3 tools/port_custom_pet.py` 能直接转过来。
+
+## 原生助手与 `bin/`
+
+悬浮窗不可能用纯 JS 做：透明、置顶、跨 Space、原生拖动都在 `native/main.swift` 编出的 AppKit `NSPanel` 里，`lib/index.js` 只负责把它 `spawn` 起来。所以 `bin/dsh-pet-macos` 是**编译产物，也是随包发布的运行文件**，必须提交进仓库：
+
+- 安装过程不编译任何东西——`package.json` 没有 `scripts`，`dsh plugin add` 只是拉包、装依赖；
+- 换成安装时现场编译也不合适：pnpm 11 默认拦依赖的构建脚本（要用户手动批准），还要求装 Xcode Command Line Tools；
+- 少了它，用户看到的就是「插件装好了但桌面上没有宠物」，宿主只会在日志里留一句 `native helper missing`。
+
+它同时包含 **arm64 和 x86_64**（`lipo -info` 能看到两片），macOS 13+ 都能跑；ad-hoc 签名，适合本机使用。仓库里把它当产物看，真正的源只有 `native/main.swift`，要重建就：
+
+```sh
+swiftc -O -swift-version 5 -target arm64-apple-macosx13.0 \
+  -framework AppKit -framework QuartzCore native/main.swift -o /tmp/dsh-pet-arm64
+swiftc -O -swift-version 5 -target x86_64-apple-macosx13.0 \
+  -framework AppKit -framework QuartzCore native/main.swift -o /tmp/dsh-pet-x86_64
+lipo -create /tmp/dsh-pet-arm64 /tmp/dsh-pet-x86_64 -output bin/dsh-pet-macos
+codesign --force --sign - bin/dsh-pet-macos
+```
 
 ## 开发
 
