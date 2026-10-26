@@ -24,7 +24,7 @@ DSH Desktop 的 macOS 桌面宠物：一只 DeepSeek 小鲸鱼浮在所有窗口
 dsh plugin --profile desktop add github:jusong/dsh-pet
 ```
 
-要固定版本就带上 tag，例如 `github:jusong/dsh-pet#v0.7.1`。
+要固定版本就带上 tag，例如 `github:jusong/dsh-pet#v0.7.2`。
 
 要改代码就用本地目录。这时 DSH 只建一个 `link:`，不会替这个 checkout 装依赖，得自己先装一次：
 
@@ -51,7 +51,7 @@ dsh plugin --profile desktop add ./dsh-pet
 - 点画廊里的卡片切换宠物，上方的预览和尺寸滑块跟着变；
 - 在输入框里粘 codex-pets.net 的宠物 ID 或页面链接即可安装，装完排到「已安装」末尾；
 - 「从 Codex 导入」会把 `~/.codex/pets` 里还没导入的、以及 Codex 自带（打在 `ChatGPT.app` 里）的宠物一起装进来；
-- 用户装的宠物可以删除、拖拽排序；内置那只不能删。
+- 用户装的宠物可以删除、拖拽排序；内置那只不能删。删掉正在用的那只时会自动切到剩下的第一只（至少要保留一只）。
 
 ## 配置
 

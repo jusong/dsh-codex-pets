@@ -148,6 +148,8 @@ process.env.DSH_PET_CODEX_ASAR = appAsar
 const store = await import(pathToFileURL(join(project, 'lib', 'pet-store.js')).href)
 const host = await import(pathToFileURL(join(project, 'lib', 'index.js')).href)
 const routes = new Map()
+// The pet on the desktop; a `.get()` ref, so a test can change it mid-run.
+let currentPet = 'alpha'
 host.apply({
   logger: { info() {}, warn() {}, debug() {} },
   inject(_names, callback) {
@@ -155,7 +157,7 @@ host.apply({
   },
   effect() {},
   on: () => () => {},
-}, { pet: 'alpha', size: 180 })
+}, { pet: { get: () => currentPet }, size: 180 })
 
 const get = async (path) => { const r = await routes.get(path).fetch(new Request(`http://x${path}`)); return { status: r.status, body: await r.json() } }
 const post = async (path, body) => {
@@ -251,7 +253,7 @@ eq([r.status, r.body.error.code], [409, 'bundled'], 'a bundled pet cannot be del
 ok(existsSync(join(pets, 'alpha', 'pet.json')), 'and is still there')
 
 r = await post('/api/dsh-pet/remove', { id: 'alpha-2' })
-eq([r.status, r.body.ok, r.body.id], [200, true, 'alpha-2'], 'a user pet is deleted')
+eq([r.status, r.body.ok, r.body.id, r.body.next], [200, true, 'alpha-2', null], 'a user pet is deleted, and no replacement is named for one not in use')
 ok(!existsSync(join(userPets, 'alpha-2')), 'its folder is gone')
 eq(JSON.parse(readFileSync(join(userPets, 'pets.json'), 'utf8')), [{ id: 'remote-v2' }, { id: 'remote-whale', note: 'keep-me' }], 'and leaves the index (extra fields kept)')
 
@@ -281,6 +283,13 @@ eq(r.status, 200, 'an installed pet is deleted')
 r = await post('/api/dsh-pet/install', { source: 'remote-whale' })
 eq([r.status, r.body.pet.id], [200, 'remote-whale'], 'and can be installed again')
 eq(JSON.parse(readFileSync(join(userPets, 'pets.json'), 'utf8')).slice(-1), [{ id: 'remote-whale' }], 're-install joins the end')
+
+// The pet on the desktop is deletable too: the answer names its replacement.
+currentPet = 'remote-whale'
+r = await post('/api/dsh-pet/remove', { id: 'remote-whale' })
+eq([r.status, r.body.ok, r.body.next], [200, true, 'alpha'], 'the pet in use is deleted, and the answer names the replacement')
+ok(!existsSync(join(userPets, 'remote-whale')), 'its folder is gone')
+currentPet = 'alpha'
 
 // ---------------------------------------------------------------------------
 console.log('import from Codex')
