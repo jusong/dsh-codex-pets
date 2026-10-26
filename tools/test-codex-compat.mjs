@@ -73,8 +73,8 @@ eq(readImageSize(webpVP8(1536, 1872)), { width: 1536, height: 1872 }, 'VP8 (loss
 eq(readImageSize(png(1536, 2288)), { width: 1536, height: 2288 }, 'PNG size')
 eq(readImageSize(Buffer.from('not an image at all, just text........')), null, 'garbage has no size')
 eq(readImageSize(Buffer.alloc(3)), null, 'a short buffer has no size')
-const hoots = readFileSync(join(ROOT, 'pets', 'hoots', 'spritesheet.webp')).subarray(0, 64)
-eq(readImageSize(hoots), { width: 1536, height: 2288 }, 'a real shipped atlas reads as v2')
+const shipped = readFileSync(join(ROOT, 'pets', 'deepseek-whale', 'spritesheet.webp')).subarray(0, 64)
+eq(readImageSize(shipped), { width: 1536, height: 1872 }, 'a real shipped atlas reads as v1')
 
 eq(versionOfAtlas({ width: 1536, height: 1872 }), 1, '1536x1872 is v1')
 eq(versionOfAtlas({ width: 1536, height: 2288 }), 2, '1536x2288 is v2')
@@ -102,11 +102,12 @@ eq(normalizeManifest({ ...bare, spriteVersionNumber: 1 }, { id: 'p', atlas: { wi
   'the atlas wins over a wrong spriteVersionNumber')
 eq(normalizeManifest({ ...bare, spriteVersionNumber: 2 }, { id: 'p' }).spriteVersionNumber, 2, 'the declared version is used without an atlas')
 eq(normalizeManifest({}, { id: 'only-id' }).name, 'only-id', 'the id is the last resort for a name')
-const full = JSON.parse(readFileSync(join(ROOT, 'pets', 'hoots', 'pet.json'), 'utf8'))
-const again = normalizeManifest(full, { id: 'hoots', atlas: { width: 1536, height: 2288 } })
-for (const key of ['animations', 'drag', 'react', 'idleRoutine', 'perform', 'look', 'grid', 'cell', 'size', 'preview']) {
+const full = JSON.parse(readFileSync(join(ROOT, 'pets', 'deepseek-whale', 'pet.json'), 'utf8'))
+const again = normalizeManifest(full, { id: 'deepseek-whale', atlas: { width: 1536, height: 1872 } })
+for (const key of ['name', 'animations', 'drag', 'react', 'idleRoutine', 'perform', 'grid', 'cell', 'size', 'preview']) {
   eq(again[key], full[key], `a full manifest keeps its own ${key}`)
 }
+eq(again.look, undefined, 'a v1 shipped pet has no look rows')
 
 // ---------------------------------------------------------------------------
 console.log('host: gallery and routes with plain Codex pets')
@@ -116,26 +117,36 @@ mkdirSync(join(project, 'lib'))
 for (const file of ['index.js', 'codex-pet.js', 'pet-store.js', 'session-ball.js']) copyFileSync(join(ROOT, 'lib', file), join(project, 'lib', file))
 symlinkSync(join(ROOT, 'node_modules'), join(project, 'node_modules'))
 const pets = join(project, 'pets')
+const userPets = join(project, 'user-pets')
 mkdirSync(pets)
+mkdirSync(userPets)
+process.env.DSH_PET_USER_DIR = userPets
 
-function putPet(dir, manifest, sheets = {}) {
-  const folder = join(pets, dir)
+function putPet(root, dir, manifest, sheets = {}) {
+  const folder = join(root, dir)
   mkdirSync(folder, { recursive: true })
   writeFileSync(join(folder, 'pet.json'), typeof manifest === 'string' ? manifest : JSON.stringify(manifest))
   for (const [name, bytes] of Object.entries(sheets)) writeFileSync(join(folder, name), bytes)
 }
-putPet('zeta-v1', { id: 'zeta-v1', displayName: 'Zeta', spritesheetPath: 'spritesheet.webp', kind: 'object' }, { 'spritesheet.webp': V1 })
-putPet('alpha-v2', { id: 'alpha-v2', displayName: 'Alpha', description: 'a v2 pet', spritesheetPath: 'spritesheet.webp', spriteVersionNumber: 2 }, { 'spritesheet.webp': V2 })
-putPet('no-version', { id: 'no-version', displayName: 'No Version', spritesheetPath: 'spritesheet.webp' }, { 'spritesheet.webp': V2 })
-putPet('folder-name', { id: 'something-else', displayName: 'Folder Name', spritesheetPath: 'sheet.png' }, { 'sheet.png': png(1536, 1872) })
-putPet('indexed', { id: 'indexed', name: 'Indexed', spritesheetPath: 'spritesheet.webp', preview: 'preview.png' }, { 'spritesheet.webp': V2, 'preview.png': png(600, 600) })
-putPet('evil', { id: 'evil', displayName: 'Evil', spritesheetPath: '../outside.webp' }, {})
+// Bundled tree: only `index.json` pets appear in the gallery. Extra folders
+ // here are fixtures for the installer / route negative cases.
+putPet(pets, 'indexed', { id: 'indexed', name: 'Indexed', spritesheetPath: 'spritesheet.webp', preview: 'preview.png' }, { 'spritesheet.webp': V2, 'preview.png': png(600, 600) })
+putPet(pets, 'evil', { id: 'evil', displayName: 'Evil', spritesheetPath: '../outside.webp' }, {})
 writeFileSync(join(pets, 'outside.webp'), V2)
-putPet('no-sheet', { id: 'no-sheet', displayName: 'No Sheet', spritesheetPath: 'missing.webp' }, {})
-putPet('Bad_Name', { id: 'x', displayName: 'Bad', spritesheetPath: 'spritesheet.webp' }, { 'spritesheet.webp': V2 })
-putPet('broken-json', '{ not json', { 'spritesheet.webp': V2 })
-putPet('evil-preview', { id: 'evil-preview', displayName: 'EP', spritesheetPath: 'spritesheet.webp', preview: '../outside.webp' }, { 'spritesheet.webp': V2 })
+putPet(pets, 'Bad_Name', { id: 'x', displayName: 'Bad', spritesheetPath: 'spritesheet.webp' }, { 'spritesheet.webp': V2 })
+putPet(pets, 'broken-json', '{ not json', { 'spritesheet.webp': V2 })
+// Installer source fixtures (not listed in index → not in the gallery).
+putPet(pets, 'zeta-v1', { id: 'zeta-v1', displayName: 'Zeta', spritesheetPath: 'spritesheet.webp', kind: 'object' }, { 'spritesheet.webp': V1 })
+putPet(pets, 'alpha-v2', { id: 'alpha-v2', displayName: 'Alpha', description: 'a v2 pet', spritesheetPath: 'spritesheet.webp', spriteVersionNumber: 2 }, { 'spritesheet.webp': V2 })
+putPet(pets, 'folder-name', { id: 'something-else', displayName: 'Folder Name', spritesheetPath: 'sheet.png' }, { 'sheet.png': png(1536, 1872) })
 writeFileSync(join(pets, 'index.json'), JSON.stringify([{ id: 'indexed' }, { id: 'ghost' }]))
+// User installs are what the gallery shows after the bundled block.
+putPet(userPets, 'zeta-v1', { id: 'zeta-v1', displayName: 'Zeta', spritesheetPath: 'spritesheet.webp', kind: 'object' }, { 'spritesheet.webp': V1 })
+putPet(userPets, 'alpha-v2', { id: 'alpha-v2', displayName: 'Alpha', description: 'a v2 pet', spritesheetPath: 'spritesheet.webp', spriteVersionNumber: 2 }, { 'spritesheet.webp': V2 })
+putPet(userPets, 'no-version', { id: 'no-version', displayName: 'No Version', spritesheetPath: 'spritesheet.webp' }, { 'spritesheet.webp': V2 })
+putPet(userPets, 'folder-name', { id: 'something-else', displayName: 'Folder Name', spritesheetPath: 'sheet.png' }, { 'sheet.png': png(1536, 1872) })
+putPet(userPets, 'no-sheet', { id: 'no-sheet', displayName: 'No Sheet', spritesheetPath: 'missing.webp' }, {})
+putPet(userPets, 'evil-preview', { id: 'evil-preview', displayName: 'EP', spritesheetPath: 'spritesheet.webp', preview: '../outside.webp' }, { 'spritesheet.webp': V2 })
 
 const host = await import(pathToFileURL(join(project, 'lib', 'index.js')).href)
 const routes = new Map()
@@ -151,7 +162,9 @@ const call = (path, query = '') => routes.get(path).fetch(new Request(`http://x$
 
 const gallery = (await (await call('/api/dsh-pet/pets')).json()).pets
 eq(gallery.map((p) => p.id), ['indexed', 'alpha-v2', 'evil-preview', 'folder-name', 'no-version', 'zeta-v1'],
-  'the index comes first, then every other folder by name; broken, unsafe and invalid ones are left out')
+  'bundled index first, then user pets by name; broken, unsafe and invalid ones are left out')
+eq(gallery.find((p) => p.id === 'indexed').bundled, true, 'an indexed pet is bundled')
+eq(gallery.filter((p) => !p.bundled).map((p) => p.id), ['alpha-v2', 'evil-preview', 'folder-name', 'no-version', 'zeta-v1'], 'user pets are not bundled')
 const byId = Object.fromEntries(gallery.map((p) => [p.id, p]))
 eq(byId['zeta-v1'].name, 'Zeta', 'displayName is the gallery name')
 eq(byId['zeta-v1'].grid, { columns: 8, rows: 9 }, 'a v1 pet has 9 rows')
@@ -244,14 +257,14 @@ result = await install('--pets-dir', dest, join(pets, 'alpha-v2'), join(pets, 'f
 eq(result.code, 0, 'two folders install in one go')
 eq(JSON.parse(readFileSync(join(folderOf('alpha-v2'), 'pet.json'), 'utf8')).look.rows, [9, 10], 'a v2 pet keeps its look rows')
 eq(JSON.parse(readFileSync(join(folderOf('something-else'), 'pet.json'), 'utf8')).spritesheetPath, 'spritesheet.png', 'a png atlas keeps its extension')
-putPet('wrong-version', { id: 'wrong-version', displayName: 'W', spritesheetPath: 'spritesheet.webp', spriteVersionNumber: 1 }, { 'spritesheet.webp': V2 })
+putPet(pets, 'wrong-version', { id: 'wrong-version', displayName: 'W', spritesheetPath: 'spritesheet.webp', spriteVersionNumber: 1 }, { 'spritesheet.webp': V2 })
 result = await install('--pets-dir', dest, join(pets, 'wrong-version'))
 ok(/note: pet.json says version 1, but the atlas is v2/.test(result.out), 'a wrong version number is noted')
 eq(JSON.parse(readFileSync(join(folderOf('wrong-version'), 'pet.json'), 'utf8')).spriteVersionNumber, 2, 'and the atlas wins')
 
 // things that must be refused
 const refuse = async (label, manifest, sheets, pattern, extra = []) => {
-  putPet(`bad-${label}`, manifest, sheets)
+  putPet(pets, `bad-${label}`, manifest, sheets)
   const out = await install('--pets-dir', dest, ...extra, join(pets, `bad-${label}`))
   eq(out.code, 1, `${label}: refused`)
   ok(pattern.test(out.out), `${label}: says why (${out.out.split('\n').pop()})`)
@@ -267,11 +280,11 @@ await refuse('version', { id: 'g', spritesheetPath: 'spritesheet.webp', spriteVe
 await refuse('json', '{ nope', { 'spritesheet.webp': V1 }, /not valid JSON/)
 await refuse('array', '[]', { 'spritesheet.webp': V1 }, /not an object/)
 // A pet whose id is not ascii takes its folder's name; with neither usable it must be named.
-putPet('bad-noascii', { id: '蓝鲸娘', displayName: '蓝鲸娘', spritesheetPath: 'spritesheet.webp' }, { 'spritesheet.webp': V1 })
+putPet(pets, 'bad-noascii', { id: '蓝鲸娘', displayName: '蓝鲸娘', spritesheetPath: 'spritesheet.webp' }, { 'spritesheet.webp': V1 })
 result = await install('--pets-dir', dest, join(pets, 'bad-noascii'))
 ok(result.code === 0 && existsSync(folderOf('bad-noascii')), 'a non-ascii id falls back to the folder name')
 eq(JSON.parse(readFileSync(join(folderOf('bad-noascii'), 'pet.json'), 'utf8')).name, '蓝鲸娘', 'and the display name stays Chinese')
-putPet('蓝鲸娘', { id: '蓝鲸娘', displayName: '蓝鲸娘', spritesheetPath: 'spritesheet.webp' }, { 'spritesheet.webp': V1 })
+putPet(pets, '蓝鲸娘', { id: '蓝鲸娘', displayName: '蓝鲸娘', spritesheetPath: 'spritesheet.webp' }, { 'spritesheet.webp': V1 })
 result = await install('--pets-dir', dest, join(pets, '蓝鲸娘'))
 ok(result.code === 1 && /cannot be a directory name.*--id/.test(result.out), 'with no usable name at all, --id is asked for')
 result = await install('--pets-dir', dest, '--id', 'blue-whale', join(pets, '蓝鲸娘'))
@@ -352,15 +365,16 @@ result = await install('--pets-dir', dest, '--registry', base, 'bad id!')
 ok(result.code === 1 && /not a pet id/.test(result.out), 'an odd id is refused before any request')
 registry.close()
 
-// installed pets are served by the host exactly like the rest
+// installed pets are served by the host from the user store
 for (const id of ['zeta-v1', 'remote-whale', 'zippy']) {
-  mkdirSync(join(pets, 'copy'), { recursive: true })
-  rmSync(join(pets, id), { recursive: true, force: true })
-  execFileSync('cp', ['-R', folderOf(id), join(pets, id)])
+  rmSync(join(userPets, id), { recursive: true, force: true })
+  execFileSync('cp', ['-R', folderOf(id), join(userPets, id)])
 }
 const after = (await (await call('/api/dsh-pet/pets')).json()).pets.map((p) => p.id)
 for (const id of ['zeta-v1', 'remote-whale', 'zippy']) ok(after.includes(id), `an installed pet (${id}) shows in the gallery with no registration`)
+ok(after.find((id) => id === 'indexed') === 'indexed', 'the bundled pet still leads')
 const zippy = (await (await call('/api/dsh-pet/pets')).json()).pets.find((p) => p.id === 'zippy')
+eq(zippy.bundled, false, 'a user install is not bundled')
 eq(zippy.look.rows, [9, 10], 'and carries its look rows')
 eq((await sheetOf('remote-whale')).status, 200, 'and its atlas is served')
 

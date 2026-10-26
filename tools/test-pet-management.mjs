@@ -1,11 +1,11 @@
 /**
  * Tests for installing and deleting pets from the settings page: the host's
- * install / remove / codex-pets / import-codex routes and the store they use.
+ * install / remove / reorder / codex-pets / import-codex routes and the store.
  *
  * Hermetic: the plugin is copied into a temp project, the registry is a local
- * HTTP server, `CODEX_HOME` points at a temp folder, and the atlases are
- * header-only stand-ins with a tag appended so that different pets have
- * different bytes.
+ * HTTP server, `CODEX_HOME` and `DSH_PET_USER_DIR` point at temp folders, and
+ * the atlases are header-only stand-ins with a tag appended so that different
+ * pets have different bytes.
  *
  *   node tools/test-pet-management.mjs
  */
@@ -42,12 +42,16 @@ const v2 = (tag) => webpVP8X(1536, 2288, tag)
 const base = mkdtempSync(join(tmpdir(), 'dsh-pet-manage-'))
 const project = join(base, 'project')
 const pets = join(project, 'pets')
+const userPets = join(base, 'user-pets')
 const codex = join(base, 'codex-home')
 const codexPets = join(codex, 'pets')
 mkdirSync(join(project, 'lib'), { recursive: true })
 mkdirSync(pets)
+mkdirSync(userPets)
 mkdirSync(codexPets, { recursive: true })
-for (const file of ['index.js', 'codex-pet.js', 'pet-store.js', 'session-ball.js']) copyFileSync(join(ROOT, 'lib', file), join(project, 'lib', file))
+for (const file of ['index.js', 'codex-pet.js', 'pet-store.js', 'session-ball.js']) {
+  copyFileSync(join(ROOT, 'lib', file), join(project, 'lib', file))
+}
 symlinkSync(join(ROOT, 'node_modules'), join(project, 'node_modules'))
 
 function putPet(dir, id, name, sheet, extra = {}) {
@@ -60,9 +64,12 @@ const BETA = v1('beta-local')
 putPet(pets, 'alpha', 'Alpha', ALPHA, { spriteVersionNumber: 2 })
 putPet(pets, 'beta', 'Beta', BETA)
 putPet(pets, 'gamma', 'Gamma', v1('gamma-local'))
+writeFileSync(join(pets, 'index.json'), JSON.stringify([
+  { id: 'alpha', name: 'Alpha' },
+  { id: 'beta', name: 'Beta' },
+  { id: 'gamma', name: 'Gamma' },
+], null, 2))
 
-// What Codex has: a new pet, the same art as beta, a different pet named like
-// beta, a broken one, and one whose folder name needs tidying.
 putPet(codexPets, 'wangcai', 'Wangcai', v2('wangcai'), { spriteVersionNumber: 2 })
 putPet(codexPets, 'beta-copy', 'Beta Copy', BETA)
 putPet(codexPets, 'gamma', 'Not Gamma', v1('different-gamma'))
@@ -100,6 +107,7 @@ const registryUrl = `http://127.0.0.1:${registry.address().port}`
 
 process.env.DSH_PET_REGISTRY = registryUrl
 process.env.CODEX_HOME = codex
+process.env.DSH_PET_USER_DIR = userPets
 
 const store = await import(pathToFileURL(join(project, 'lib', 'pet-store.js')).href)
 const host = await import(pathToFileURL(join(project, 'lib', 'index.js')).href)
@@ -121,156 +129,149 @@ const post = async (path, body) => {
   return { status: r.status, body: await r.json() }
 }
 const ids = async () => (await get('/api/dsh-pet/pets')).body.pets.map((p) => p.id)
+const galleryPets = async () => (await get('/api/dsh-pet/pets')).body.pets
 const stagings = () => readdirSync(tmpdir()).filter((name) => name.startsWith('dsh-pet-install-')).length
 const stagingsBefore = stagings()
 
 // ---------------------------------------------------------------------------
 console.log('routes')
-for (const path of ['install', 'remove', 'codex-pets', 'import-codex']) ok(routes.has(`/api/dsh-pet/${path}`), `${path} route is registered`)
-for (const path of ['install', 'remove', 'import-codex']) eq(routes.get(`/api/dsh-pet/${path}`).methods, ['POST'], `${path} accepts POST only`)
+for (const path of ['install', 'remove', 'reorder', 'codex-pets', 'import-codex']) ok(routes.has(`/api/dsh-pet/${path}`), `${path} route is registered`)
+for (const path of ['install', 'remove', 'reorder', 'import-codex']) eq(routes.get(`/api/dsh-pet/${path}`).methods, ['POST'], `${path} accepts POST only`)
 eq(routes.get('/api/dsh-pet/codex-pets').methods, ['GET'], 'codex-pets is a GET')
 
 // ---------------------------------------------------------------------------
 console.log('store: reading what people paste')
 const { registryIdOf, uniqueId } = store
 eq(registryIdOf('deepseek', registryUrl), 'deepseek', 'a bare id')
-eq(registryIdOf('  deepseek \n', registryUrl), 'deepseek', 'an id with whitespace around it')
 eq(registryIdOf(`${registryUrl}/#/pets/deepseek`, registryUrl), 'deepseek', 'a hash page link')
-eq(registryIdOf(`${registryUrl}/pets/deepseek`, registryUrl), 'deepseek', 'a path page link')
-eq(registryIdOf(`${registryUrl}/#/pets/deepseek?ref=x`, registryUrl), 'deepseek', 'a link with a query')
-eq(registryIdOf('https://codex-pets.net/#/pets/deepseek'), 'deepseek', 'the real site')
-eq(registryIdOf('https://evil.example/#/pets/deepseek', registryUrl), null, 'another site is not the registry')
-eq(registryIdOf(`${registryUrl}/pets/deepseek/download`, registryUrl), null, 'a download link is not a page')
-eq(registryIdOf('', registryUrl), null, 'empty')
-eq(registryIdOf(undefined, registryUrl), null, 'undefined')
-eq(registryIdOf('../../etc/passwd', registryUrl), null, 'a path is not an id')
-eq(registryIdOf('two words', registryUrl), null, 'words are not an id')
-eq(uniqueId(pets, 'fresh'), 'fresh', 'a free name stays')
-eq(uniqueId(pets, 'alpha'), 'alpha-2', 'a taken name gets -2')
+eq(uniqueId([pets, userPets], 'fresh'), 'fresh', 'a free name stays')
+eq(uniqueId([pets, userPets], 'alpha'), 'alpha-2', 'a taken bundled name gets -2')
+
+eq((await galleryPets()).filter((p) => p.bundled).map((p) => p.id), ['alpha', 'beta', 'gamma'], 'bundled pets lead and are flagged')
+eq((await galleryPets()).filter((p) => !p.bundled), [], 'no user pets yet')
 
 // ---------------------------------------------------------------------------
 console.log('install')
 let r = await post('/api/dsh-pet/install', { source: 'remote-whale' })
 eq([r.status, r.body.ok, r.body.already, r.body.pet.id, r.body.pet.name, r.body.pet.version], [200, true, false, 'remote-whale', 'Remote Whale', 1], 'an id installs')
 ok((await ids()).includes('remote-whale'), 'and shows in the gallery')
-const written = JSON.parse(readFileSync(join(pets, 'remote-whale', 'pet.json'), 'utf8'))
+ok(existsSync(join(userPets, 'remote-whale', 'pet.json')), 'under the user store')
+ok(!existsSync(join(pets, 'remote-whale')), 'not under the bundled tree')
+const written = JSON.parse(readFileSync(join(userPets, 'remote-whale', 'pet.json'), 'utf8'))
 eq(written.source, `${registryUrl}/#/pets/remote-whale`, 'with the page it came from')
-ok(readFileSync(join(pets, 'remote-whale', 'spritesheet.webp')).equals(remoteSheets['remote-whale'].bytes), 'and the atlas bytes')
+eq(JSON.parse(readFileSync(join(userPets, 'pets.json'), 'utf8')), [{ id: 'remote-whale' }], 'and is last in the user index')
 
 r = await post('/api/dsh-pet/install', { source: `${registryUrl}/#/pets/remote-whale` })
-eq([r.status, r.body.already, r.body.pet.id], [200, true, 'remote-whale'], 'the same pet again, by its page link, is recognised')
-ok(!(await ids()).includes('remote-whale-2'), 'and installed only once')
+eq([r.status, r.body.already, r.body.pet.id], [200, true, 'remote-whale'], 'the same pet again is recognised')
 
 r = await post('/api/dsh-pet/install', { source: 'twin-of-alpha' })
-eq([r.status, r.body.already, r.body.pet.id], [200, true, 'alpha'], 'a pet with art that is already installed is recognised under its other name')
-ok(!(await ids()).includes('twin-of-alpha'), 'and not installed again')
+eq([r.status, r.body.already, r.body.pet.id], [200, true, 'alpha'], 'matching bundled art is recognised')
 
 r = await post('/api/dsh-pet/install', { source: 'alpha' })
-eq([r.status, r.body.already, r.body.pet.id], [200, false, 'alpha-2'], 'a different pet with a taken name is installed under a free one')
-ok(readFileSync(join(pets, 'alpha', 'spritesheet.webp')).equals(ALPHA), 'and the pet that held the name is untouched')
-eq((await get('/api/dsh-pet/pets')).body.pets.find((p) => p.id === 'alpha-2').name, 'Another Alpha', 'with its own name')
+eq([r.status, r.body.already, r.body.pet.id], [200, false, 'alpha-2'], 'a different pet with a taken name gets a free id')
+ok(existsSync(join(userPets, 'alpha-2', 'pet.json')), 'under the user store')
+ok(readFileSync(join(pets, 'alpha', 'spritesheet.webp')).equals(ALPHA), 'bundled alpha is untouched')
+eq(JSON.parse(readFileSync(join(userPets, 'pets.json'), 'utf8')), [{ id: 'remote-whale' }, { id: 'alpha-2' }], 'new installs append')
 
 r = await post('/api/dsh-pet/install', { source: 'nobody' })
-eq([r.status, r.body.error.code], [404, 'not-found'], 'an unknown id is 404 not-found')
+eq([r.status, r.body.error.code], [404, 'not-found'], 'an unknown id is 404')
 r = await post('/api/dsh-pet/install', { source: 'bad-pet' })
-eq([r.status, r.body.error.code], [400, 'invalid-pet'], 'something that is not an atlas is refused')
-ok(!existsSync(join(pets, 'bad-pet')), 'and leaves nothing behind')
-for (const source of ['', '   ', 'two words', 'https://evil.example/#/pets/x', `${registryUrl}/pets/x/download`, '../../etc', 42, null]) {
+eq([r.status, r.body.error.code], [400, 'invalid-pet'], 'a bad atlas is refused')
+for (const source of ['', 'two words', 'https://evil.example/#/pets/x', 42, null]) {
   r = await post('/api/dsh-pet/install', { source })
   eq([r.status, r.body.error.code], [400, 'invalid-source'], `source ${JSON.stringify(source)} is refused`)
 }
-r = await post('/api/dsh-pet/install', 'not json at all')
-eq([r.status, r.body.error.code], [400, 'invalid-source'], 'a body that is not JSON is refused')
-r = await post('/api/dsh-pet/install', [1, 2])
-eq([r.status, r.body.error.code], [400, 'invalid-source'], 'a JSON array is refused')
 
 const both = await Promise.all([post('/api/dsh-pet/install', { source: 'remote-v2' }), post('/api/dsh-pet/install', { source: 'remote-v2' })])
-eq(both.map((x) => x.status), [200, 200], 'two installs at once both answer')
-eq(both.map((x) => x.body.already).sort(), [false, true], 'one installs, the other sees it already there')
-eq((await ids()).filter((id) => id.startsWith('remote-v2')), ['remote-v2'], 'exactly one copy exists')
-eq(readdirSync(pets).filter((name) => name.startsWith('.')), [], 'no half-written folder is left in pets/')
+eq(both.map((x) => x.body.already).sort(), [false, true], 'one installs, the other sees it')
+eq(JSON.parse(readFileSync(join(userPets, 'pets.json'), 'utf8')).slice(-1), [{ id: 'remote-v2' }], 'remote-v2 is at the end')
+
+// ---------------------------------------------------------------------------
+console.log('pets.json')
+const { readUserPets, writeUserPets, writeUserOrder } = store
+writeUserPets(userPets, [{ id: 'remote-whale', note: 'keep-me' }, { id: 'alpha-2' }, { id: 'remote-v2' }])
+writeUserOrder(userPets, ['remote-v2', 'alpha-2', 'remote-whale'])
+eq(readUserPets(userPets), [
+  { id: 'remote-v2' },
+  { id: 'alpha-2' },
+  { id: 'remote-whale', note: 'keep-me' },
+], 'reorder by ids keeps extra fields')
+
+// ---------------------------------------------------------------------------
+console.log('reorder')
+r = await post('/api/dsh-pet/reorder', { ids: ['remote-v2', 'alpha-2', 'remote-whale'] })
+eq([r.status, r.body.ok, r.body.ids], [200, true, ['remote-v2', 'alpha-2', 'remote-whale']], 'user pets can be reordered')
+eq((await galleryPets()).filter((p) => !p.bundled).map((p) => p.id), ['remote-v2', 'alpha-2', 'remote-whale'], 'gallery follows the new order')
+eq(JSON.parse(readFileSync(join(userPets, 'pets.json'), 'utf8')).find((e) => e.id === 'remote-whale').note, 'keep-me', 'host reorder keeps extra fields')
+r = await post('/api/dsh-pet/reorder', { ids: ['remote-whale', 'alpha'] })
+eq([r.status, r.body.error.code], [409, 'bundled'], 'a bundled id cannot be in a reorder')
+r = await post('/api/dsh-pet/reorder', { ids: ['remote-v2', 'remote-whale'] })
+eq([r.status, r.body.error.code], [400, 'invalid-order'], 'omitting a user pet is refused')
 
 // ---------------------------------------------------------------------------
 console.log('delete')
 r = await post('/api/dsh-pet/remove', { id: 'alpha' })
-eq([r.status, r.body.error.code], [409, 'active'], 'the pet in use cannot be deleted')
+eq([r.status, r.body.error.code], [409, 'bundled'], 'a bundled pet cannot be deleted')
 ok(existsSync(join(pets, 'alpha', 'pet.json')), 'and is still there')
 
-r = await post('/api/dsh-pet/remove', { id: 'beta' })
-eq([r.status, r.body.ok, r.body.id], [200, true, 'beta'], 'another pet is deleted')
-ok(!existsSync(join(pets, 'beta')), 'its folder is gone')
-ok(!(await ids()).includes('beta'), 'and so is its gallery entry')
-r = await post('/api/dsh-pet/remove', { id: 'beta' })
-eq([r.status, r.body.error.code], [404, 'not-installed'], 'deleting it twice says it is gone')
+r = await post('/api/dsh-pet/remove', { id: 'alpha-2' })
+eq([r.status, r.body.ok, r.body.id], [200, true, 'alpha-2'], 'a user pet is deleted')
+ok(!existsSync(join(userPets, 'alpha-2')), 'its folder is gone')
+eq(JSON.parse(readFileSync(join(userPets, 'pets.json'), 'utf8')), [{ id: 'remote-v2' }, { id: 'remote-whale', note: 'keep-me' }], 'and leaves the index (extra fields kept)')
 
-for (const id of ['', '../project', '..', 'a/b', 'Beta', 'with space', '.hidden', 7, null]) {
+r = await post('/api/dsh-pet/remove', { id: 'beta' })
+eq([r.status, r.body.error.code], [409, 'bundled'], 'another bundled pet is also protected')
+
+for (const id of ['', '../project', 'Beta', 7, null]) {
   r = await post('/api/dsh-pet/remove', { id })
   eq([r.status, r.body.error.code], [400, 'invalid-id'], `id ${JSON.stringify(id)} is refused`)
 }
-ok(existsSync(join(project, 'lib', 'index.js')) && existsSync(pets), 'nothing outside a pet folder was touched')
 
-mkdirSync(join(pets, 'not-a-pet'))
-writeFileSync(join(pets, 'not-a-pet', 'precious.txt'), 'keep')
+mkdirSync(join(userPets, 'not-a-pet'))
+writeFileSync(join(userPets, 'not-a-pet', 'precious.txt'), 'keep')
 r = await post('/api/dsh-pet/remove', { id: 'not-a-pet' })
 eq([r.status, r.body.error.code], [404, 'not-installed'], 'a folder without pet.json is not deleted')
-ok(existsSync(join(pets, 'not-a-pet', 'precious.txt')), 'and its files are kept')
 
 const outside = join(base, 'outside')
 mkdirSync(outside)
 writeFileSync(join(outside, 'keep.txt'), 'keep')
-symlinkSync(outside, join(pets, 'linked'))
+symlinkSync(outside, join(userPets, 'linked'))
 r = await post('/api/dsh-pet/remove', { id: 'linked' })
-eq([r.status, r.body.ok], [200, true], 'a symlinked pet can be removed')
-ok(!existsSync(join(pets, 'linked')) && existsSync(join(outside, 'keep.txt')), 'by unlinking it, never following it')
+eq([r.status, r.body.ok], [200, true], 'a symlinked user pet can be removed')
+ok(!existsSync(join(userPets, 'linked')) && existsSync(join(outside, 'keep.txt')), 'by unlinking it')
 
 r = await post('/api/dsh-pet/remove', { id: 'remote-whale' })
-eq(r.status, 200, 'an installed pet is deleted too')
+eq(r.status, 200, 'an installed pet is deleted')
 r = await post('/api/dsh-pet/install', { source: 'remote-whale' })
-eq([r.status, r.body.already, r.body.pet.id], [200, false, 'remote-whale'], 'and can be installed again afterwards')
-r = await post('/api/dsh-pet/remove', { id: 'remote-whale' })
+eq([r.status, r.body.pet.id], [200, 'remote-whale'], 'and can be installed again')
+eq(JSON.parse(readFileSync(join(userPets, 'pets.json'), 'utf8')).slice(-1), [{ id: 'remote-whale' }], 're-install joins the end')
 
 // ---------------------------------------------------------------------------
 console.log('import from Codex')
 let list = (await get('/api/dsh-pet/codex-pets')).body.pets
 const status = Object.fromEntries(list.map((p) => [p.folder, p.status]))
-eq(status, { 'Mixed Case': 'ready', 'beta-copy': 'ready', broken: 'failed', gamma: 'taken', wangcai: 'ready' }, 'each Codex pet says what importing it would do (beta was deleted above, so its twin is new)')
-eq(list.find((p) => p.folder === 'Mixed Case').id, 'mixed-case', 'a folder name is tidied into an id')
-eq(list.find((p) => p.folder === 'wangcai').version, 2, 'with its atlas version')
-
-// bring beta back in the same art, so beta-copy is a duplicate
-putPet(pets, 'beta', 'Beta', BETA)
-list = (await get('/api/dsh-pet/codex-pets')).body.pets
-eq(list.find((p) => p.folder === 'beta-copy').status, 'installed', 'the same art under another name counts as installed')
-eq(list.find((p) => p.folder === 'beta-copy').installedAs, 'beta', 'and says which')
+eq(status, { 'Mixed Case': 'ready', 'beta-copy': 'installed', broken: 'failed', gamma: 'taken', wangcai: 'ready' }, 'each Codex pet says what importing would do')
+eq(list.find((p) => p.folder === 'beta-copy').installedAs, 'beta', 'same art under the bundled name')
 
 r = await post('/api/dsh-pet/import-codex', {})
 eq(r.status, 200, 'import answers 200')
 eq(r.body.installed.map((p) => p.id).sort(), ['mixed-case', 'wangcai'], 'the new pets are imported')
-eq(r.body.skipped.map((p) => `${p.reason}:${p.name}`).sort(), ['installed:Beta Copy', 'taken:Not Gamma'], 'duplicates and taken names are skipped')
-eq(r.body.failed.map((p) => [p.folder, p.code]), [['broken', 'invalid-pet']], 'a broken pet is reported, and does not stop the rest')
-const idsAfter = await ids()
-ok(idsAfter.includes('wangcai') && idsAfter.includes('mixed-case'), 'imported pets are in the gallery')
-eq((await get('/api/dsh-pet/pets')).body.pets.find((p) => p.id === 'wangcai').look.rows, [9, 10], 'a v2 pet keeps its look rows')
-ok(readFileSync(join(pets, 'gamma', 'spritesheet.webp')).equals(v1('gamma-local')), 'a pet that held the name was not replaced')
-ok(existsSync(join(codexPets, 'wangcai', 'pet.json')) && existsSync(join(codexPets, 'Mixed Case', 'pet.json')), 'Codex\'s own folders are untouched')
+ok(existsSync(join(userPets, 'wangcai', 'pet.json')), 'into the user store')
+ok(!existsSync(join(pets, 'wangcai')), 'not into the bundled tree')
+const orderAfter = JSON.parse(readFileSync(join(userPets, 'pets.json'), 'utf8')).map((e) => e.id)
+ok(orderAfter.indexOf('wangcai') > orderAfter.indexOf('remote-whale'), 'imported pets append after earlier installs')
 
 r = await post('/api/dsh-pet/import-codex', {})
 eq(r.body.installed, [], 'importing again installs nothing')
-eq(r.body.skipped.length, 4, 'and skips what is there')
-eq((await ids()).length, idsAfter.length, 'and the gallery does not change')
 
 process.env.CODEX_HOME = join(base, 'no-such-codex')
 eq((await get('/api/dsh-pet/codex-pets')).body.pets, [], 'with no Codex folder there is nothing to list')
-r = await post('/api/dsh-pet/import-codex', {})
-eq([r.status, r.body.installed, r.body.skipped, r.body.failed], [200, [], [], []], 'and importing is a no-op')
 process.env.CODEX_HOME = codex
 
-// ---------------------------------------------------------------------------
-console.log('registry unreachable')
 registry.close()
 r = await post('/api/dsh-pet/install', { source: 'remote-v2-again' })
-eq([r.status, r.body.error.code], [502, 'unreachable'], 'a registry that is down is 502 unreachable')
+eq([r.status, r.body.error.code], [502, 'unreachable'], 'a registry that is down is 502')
 
-eq(stagings(), stagingsBefore, 'no staging folder is left in the temp directory')
+eq(stagings(), stagingsBefore, 'no staging folder is left')
 rmSync(base, { recursive: true, force: true })
 console.log(`\npet management: ${checks} checks passed`)

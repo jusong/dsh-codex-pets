@@ -3,3 +3,7 @@ node_modules/
 __preview.html
 __pycache__/
 tools/.cache/
+
+# Scratch workspace of the `hatch-pet` skill: prompts, frames and QA for a pet
+# being drawn. Never part of the plugin.
+.hatch-runs/

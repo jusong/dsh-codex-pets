@@ -3,5 +3,5 @@
     - id: dsh-pet
       name: dsh-pet
       config:
-        pet: codex
+        pet: deepseek-whale
         size: 220

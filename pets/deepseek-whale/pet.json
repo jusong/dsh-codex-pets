@@ -1,11 +1,11 @@
 {
-  "id": "deepseek",
-  "name": "蓝色大肥鱼",
-  "description": "一位蓝发、深海鲸鱼主题的可爱二次元女仆助手宠物，来自deepseek。",
+  "id": "deepseek-whale",
+  "name": "deepseek-whale",
+  "description": "一只以 DeepSeek 鲸鱼为原型的 3D 软萌小鲸鱼桌面宠物：圆润饱满的短胖身体、闪亮大眼睛、白色肚皮、粉色腮红。包含待机、左右移动时双鳍摆动的奔跑、挥手、跳跃、失败、等待、查看共 9 种动作状态。",
   "size": 200,
   "preview": "preview.png",
   "type": "sprite",
-  "spriteVersionNumber": 2,
+  "spriteVersionNumber": 1,
   "spritesheetPath": "spritesheet.webp",
   "cell": {
     "width": 192,
@@ -13,7 +13,7 @@
   },
   "grid": {
     "columns": 8,
-    "rows": 11
+    "rows": 9
   },
   "idle": "idle",
   "animations": {
@@ -23,6 +23,7 @@
         280,
         110,
         110,
+        140,
         140,
         140,
         140,
@@ -61,12 +62,19 @@
         140,
         140,
         140,
+        140,
+        140,
+        140,
+        140,
         280
       ]
     },
     "jumping": {
       "row": 4,
       "durations": [
+        140,
+        140,
+        140,
         140,
         140,
         140,
@@ -95,6 +103,8 @@
         150,
         150,
         150,
+        150,
+        150,
         260
       ]
     },
@@ -106,12 +116,16 @@
         120,
         120,
         120,
+        120,
+        120,
         220
       ]
     },
     "review": {
       "row": 8,
       "durations": [
+        150,
+        150,
         150,
         150,
         150,
@@ -146,14 +160,5 @@
     ],
     "splash": "sparkle"
   },
-  "source": "custom Codex pet (~/.codex/pets/deepseek-2)",
-  "look": {
-    "rows": [
-      9,
-      10
-    ],
-    "count": 16,
-    "startDegrees": 0,
-    "stepDegrees": 22.5
-  }
+  "source": "custom Codex pet (~/.dsh/pets/deepseek-whale-2)"
 }

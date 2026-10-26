@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
-const petId = process.argv[2] || 'codex'
+const petId = process.argv[2] || 'deepseek-whale'
 
 const petDir = join(root, 'pets', petId)
 const manifestPath = join(petDir, 'pet.json')

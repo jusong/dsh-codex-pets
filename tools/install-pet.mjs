@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Install pets made for Codex into this project's `pets/`.
+ * Install pets made for Codex into the user pet store (`~/.dsh/pets`).
  *
  *   node tools/install-pet.mjs deepseek
  *   node tools/install-pet.mjs https://codex-pets.net/#/pets/deepseek
@@ -14,17 +14,18 @@
  *   a folder with pet.json           e.g. anything under ~/.codex/pets
  *   a .zip (file or URL)             the package the site's Download gives
  *
- * and is installed as `pets/<id>/` holding the `pet.json` and the atlas. That
- * is the whole Codex format, so a pet needs nothing else: the plugin fills in
- * the rows and timings the Codex contract fixes, and the settings page picks
- * the pet up on its next refresh. Nothing has to be registered.
+ * and is installed as `~/.dsh/pets/<id>/` holding the `pet.json` and the atlas.
+ * That is the whole Codex format, so a pet needs nothing else: the plugin fills
+ * in the rows and timings the Codex contract fixes, and the settings page picks
+ * the pet up on its next refresh. Nothing has to be registered. Shipped pets
+ * stay in the plugin's `pets/`; installs never land there.
  *
  * Options
  *   --id <id>           install under another directory name (one source only)
  *   --force             replace a pet that is already installed under that id
  *   --codex-home        read bare ids from ~/.codex/pets instead of the registry
  *   --registry <url>    another registry host (default https://codex-pets.net)
- *   --pets-dir <dir>    install somewhere else (default: this project's pets/)
+ *   --pets-dir <dir>    install somewhere else (default: ~/.dsh/pets)
  *   --dry-run           check the source and say what would happen
  *
  * No dependencies: Node 18+, and `unzip` (macOS has it) for zip packages.
@@ -34,19 +35,16 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  DEFAULT_REGISTRY, MAX_ATLAS_BYTES, StoreError, download, inspectPet, installPet, registryIdOf,
-  stageFromRegistry, stageFromZip,
+  DEFAULT_REGISTRY, MAX_ATLAS_BYTES, StoreError, appendUserOrder, download, inspectPet, installPet,
+  registryIdOf, stageFromRegistry, stageFromZip, userPetsDir,
 } from '../lib/pet-store.js'
-
-const HERE = dirname(fileURLToPath(import.meta.url))
-const DEFAULT_PETS_DIR = join(HERE, '..', 'pets')
 
 // -- arguments ---------------------------------------------------------------
 
 export function parseArgs(argv) {
   const options = {
     sources: [], id: null, force: false, codexHome: false, dryRun: false,
-    registry: DEFAULT_REGISTRY, petsDir: DEFAULT_PETS_DIR, help: false,
+    registry: DEFAULT_REGISTRY, petsDir: userPetsDir(), help: false,
   }
   const needsValue = (flag, value) => {
     if (value === undefined || value.startsWith('--')) throw new StoreError('usage', `${flag} needs a value`)
@@ -136,6 +134,7 @@ export async function run(argv, log = console.log) {
       const pet = inspectPet(folder, { fallbackId })
       for (const note of pet.notes) log(`  note: ${note}`)
       const done = installPet(pet, { petsDir: options.petsDir, id: options.id, force: options.force, dryRun: options.dryRun, origin })
+      if (!options.dryRun) appendUserOrder(options.petsDir, done.id)
       const looks = done.look ? 'follows the cursor' : 'no look directions (v1 atlas)'
       log(`${arg}: ${options.dryRun ? 'would install' : 'installed'} ${done.id}: "${done.name}", v${done.version} atlas, ${looks}`)
     } catch (error) {
@@ -150,7 +149,7 @@ export async function run(argv, log = console.log) {
 }
 
 function usage() {
-  return `Install pets made for Codex into pets/.
+  return `Install pets made for Codex into ~/.dsh/pets.
 
   node tools/install-pet.mjs <source>... [options]
 
@@ -165,7 +164,7 @@ options
   --id <id>         install under another directory name
   --force           replace a pet already installed under that id
   --registry <url>  another registry host (default ${DEFAULT_REGISTRY})
-  --pets-dir <dir>  install somewhere else (default: this project's pets/)
+  --pets-dir <dir>  install somewhere else (default: ~/.dsh/pets)
   --dry-run         check only`
 }
 

@@ -4,9 +4,10 @@ Port a custom Codex pet into this project.
 
 The official pets come off the Codex CDN or out of the desktop bundle, but
 Codex also lets you install pets of your own. Those live in a directory
-under ``~/.codex/pets/`` with a ``pet.json`` and a ``spritesheet.webp``, and
-they are already the v2 shape -- 8 columns x 11 rows of 192x208 cells -- so
-they only need a manifest in this project's dialect and a gallery preview.
+under ``~/.codex/pets/`` (or ``~/.dsh/pets/``) with a ``pet.json`` and a
+``spritesheet.webp``, in one of the two shapes Codex uses -- 8 columns of
+192x208 cells, 9 rows (v1) or 11 rows with the gaze rows (v2) -- so they
+only need a manifest in this project's dialect and a gallery preview.
 
     python3 tools/port_custom_pet.py ~/.codex/pets/deepseek-2 \\
         --id deepseek --name "蓝色大肥鱼"
@@ -21,9 +22,10 @@ What this script works out on its own
   as the last cell that still has something in it -- and the timings are
   stretched to fit, keeping the rule the official table follows: every
   frame lasts a fixed step except the last one, which lingers.
-* **That the atlas really is 8x11.** A custom pet that came out of a
-  generator can be the wrong size, and the engine would quietly draw the
-  wrong cells rather than complain.
+* **That the atlas really is 8 columns of 9 or 11 rows.** A custom pet that
+  came out of a generator can be the wrong size, and the engine would
+  quietly draw the wrong cells rather than complain. The height also says
+  whether the pet gets the gaze rows: a v1 pet never turns its head.
 
 Usage:
     python3 tools/port_custom_pet.py <source-dir> --id <id> --name <name>
@@ -36,19 +38,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, '..')
 PETS_DIR = os.path.join(ROOT, 'pets')
 
-sys.path.insert(0, HERE)
-
 CELL_W, CELL_H = 192, 208
-COLS, ROWS = 8, 11
-ATLAS_W, ATLAS_H = CELL_W * COLS, CELL_H * ROWS
+COLS = 8
+ATLAS_W = CELL_W * COLS
+# The two atlas shapes Codex uses: v1 stops after the nine animation rows, v2
+# adds the two gaze rows. The atlas's height says which one a pet is.
+ROWS_BY_VERSION = {1: 9, 2: 11}
 
 # The nine standard rows, in the order the Codex atlases use them, with the
 # official per-frame timings. Every frame of a row lasts `step`, except the
@@ -113,26 +115,27 @@ def timings_for(row: int, count: int) -> list[int]:
     return base[:-1] + [step] * (count - len(base)) + [base[-1]]
 
 
-def manifest_for(pet_id, name, description, source, counts) -> dict:
+def manifest_for(pet_id, name, description, source, counts, rows) -> dict:
     """The manifest in this project's dialect."""
     animations = {}
     for animation, spec in ANIMATIONS.items():
         row = spec['row']
-        count = counts[row]
+        count = counts.get(row, 0)
         if count == 0:
             continue
         animations[animation] = {"row": row, "durations": timings_for(row, count)}
-    return {
+    version = 2 if rows == ROWS_BY_VERSION[2] else 1
+    manifest = {
         "id": pet_id,
         "name": name,
         "description": description,
         "size": 200,
         "preview": "preview.png",
         "type": "sprite",
-        "spriteVersionNumber": 2,
+        "spriteVersionNumber": version,
         "spritesheetPath": "spritesheet.webp",
         "cell": {"width": CELL_W, "height": CELL_H},
-        "grid": {"columns": COLS, "rows": ROWS},
+        "grid": {"columns": COLS, "rows": rows},
         "idle": "idle",
         "animations": animations,
         "drag": {"right": "running-right", "left": "running-left"},
@@ -140,19 +143,48 @@ def manifest_for(pet_id, name, description, source, counts) -> dict:
         "idleRoutine": {"every": [3, 6], "animations": IDLE_ROUTINE},
         "perform": {"sequence": ["jumping", "waving"], "splash": "sparkle"},
         "source": source,
-        "look": {"rows": [9, 10], "count": 16, "startDegrees": 0, "stepDegrees": 22.5},
     }
+    # Only a v2 atlas has the gaze rows; a v1 pet never turns its head.
+    if version == 2:
+        manifest["look"] = {"rows": [9, 10], "count": 16, "startDegrees": 0, "stepDegrees": 22.5}
+    return manifest
 
 
 def make_preview(sheet_path: str, out_path: str, size: int = 600) -> None:
     """The gallery still: the idle frame on a soft blue disc.
 
-    The official pets and the derived ones both use the same disc, so the
-    gallery looks like one set rather than a pile of thumbnails.
+    The shipped pet and the ones people port themselves use the same disc,
+    so the gallery looks like one set rather than a pile of thumbnails.
     """
-    from port_codex_pets import make_preview as official_preview   # noqa: PLC0415
+    atlas = Image.open(sheet_path).convert("RGBA")
+    frame = atlas.crop((0, 0, CELL_W, CELL_H))
 
-    official_preview(sheet_path, out_path, size)
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    disc = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(disc)
+    for i in range(size // 2, 0, -1):
+        f = i / (size / 2)
+        color = (
+            round(214 - 60 * (1 - f)),
+            round(238 - 48 * (1 - f)),
+            round(255 - 20 * (1 - f)),
+        )
+        draw.ellipse(
+            [size / 2 - i, size / 2 - i, size / 2 + i, size / 2 + i],
+            fill=color + (255,),
+        )
+    canvas.alpha_composite(disc)
+
+    shadow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).ellipse(
+        [size / 2 - frame.width * 0.36, size * 0.80, size / 2 + frame.width * 0.36, size * 0.855],
+        fill=(11, 31, 58, 40),
+    )
+    canvas.alpha_composite(shadow)
+
+    canvas.alpha_composite(frame, ((size - frame.width) // 2,
+                                   (size - frame.height) // 2 - size // 22))
+    canvas.save(out_path)
 
 
 def main() -> None:
@@ -186,12 +218,13 @@ def main() -> None:
 
     with Image.open(sheet_path) as opened:
         atlas = opened.convert('RGBA')
-    if atlas.size != (ATLAS_W, ATLAS_H):
-        raise SystemExit(f'{sheet_path} is {atlas.size}, expected '
-                         f'{ATLAS_W}x{ATLAS_H} (8 columns x 11 rows of '
-                         f'{CELL_W}x{CELL_H})')
+    rows = atlas.size[1] // CELL_H
+    if atlas.size[0] != ATLAS_W or rows not in ROWS_BY_VERSION.values():
+        raise SystemExit(f'{sheet_path} is {atlas.size}, expected {ATLAS_W} '
+                         f'pixels wide and 9 or 11 rows of {CELL_H} '
+                         f'(8 columns of {CELL_W}x{CELL_H})')
 
-    counts = {row: frames_in_row(atlas, row) for row in range(ROWS)}
+    counts = {row: frames_in_row(atlas, row) for row in range(rows)}
     for row, count in counts.items():
         print(f'  row {row}: {count} frame(s)')
 
@@ -200,7 +233,7 @@ def main() -> None:
     sheet_out = os.path.join(target_dir, 'spritesheet.webp')
     atlas.save(sheet_out, 'WEBP', lossless=True, quality=100, method=6)
 
-    manifest = manifest_for(args.id, args.name, description, source, counts)
+    manifest = manifest_for(args.id, args.name, description, source, counts, rows)
     with open(os.path.join(target_dir, 'pet.json'), 'w', encoding='utf-8') as handle:
         json.dump(manifest, handle, indent=2, ensure_ascii=False)
         handle.write('\n')

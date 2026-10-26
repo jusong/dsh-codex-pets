@@ -154,16 +154,18 @@ struct PetManifest {
         columns = max(1, Int(number(grid?["columns"]) ?? 8))
         rows = max(1, Int(number(grid?["rows"]) ?? Double(atlasRows)))
 
+        // Start from the Codex contract, then let the manifest override any
+        // named row. A pet that only customises `jumping` must still keep
+        // `running-right` / `running-left` for drag.
         var animations: [String: PetAnimation] = [:]
+        for (row, spec) in CodexContract.animations.enumerated() {
+            animations[spec.name] = PetAnimation(name: spec.name, row: row, durations: spec.durations)
+        }
         for (name, raw) in (object["animations"] as? [String: Any]) ?? [:] {
             guard let spec = raw as? [String: Any] else { continue }
             let durations = ((spec["durations"] as? [Any]) ?? []).compactMap(number)
-            animations[name] = PetAnimation(name: name, row: Int(number(spec["row"]) ?? 0), durations: durations)
-        }
-        if animations.isEmpty {
-            for (row, spec) in CodexContract.animations.enumerated() {
-                animations[spec.name] = PetAnimation(name: spec.name, row: row, durations: spec.durations)
-            }
+            let row = Int(number(spec["row"]) ?? Double(animations[name]?.row ?? 0))
+            animations[name] = PetAnimation(name: name, row: row, durations: durations.isEmpty ? (animations[name]?.durations ?? []) : durations)
         }
         self.animations = animations
         idle = object["idle"] as? String ?? "idle"

@@ -6,8 +6,9 @@ The engine does not care where a pet's art came from; it only cares that the
 atlas is shaped the way it expects. This script is the guard for that:
 
     * every pet in pets/index.json has a manifest and a preview
-    * the manifest names a 192x208 cell in an 8x11 grid
-    * the atlas really is 1536x2288
+    * the manifest names a 192x208 cell in an 8-column grid of 9 rows (v1)
+      or 11 rows (v2)
+    * the atlas really is 1536x1872 or 1536x2288
     * no cell paints over its neighbour
     * the resting pet sits inside the safe area of the cell, with room
       above for the jump and below for the feet
@@ -28,12 +29,14 @@ ROOT = os.path.join(HERE, '..')
 PETS_DIR = os.path.join(ROOT, 'pets')
 
 CELL_W, CELL_H = 192, 208
-COLS, ROWS = 8, 11
-ATLAS_W, ATLAS_H = CELL_W * COLS, CELL_H * ROWS
+COLS = 8
+ATLAS_W = CELL_W * COLS
+# v1 stops after the nine animation rows; v2 adds the two gaze rows.
+ROWS_BY_VERSION = {1: 9, 2: 11}
 
 REQUIRED_MANIFEST = ('id', 'name', 'type', 'size', 'preview', 'spriteVersionNumber',
                      'spritesheetPath', 'cell', 'grid', 'idle', 'animations',
-                     'drag', 'look', 'idleRoutine', 'react', 'perform')
+                     'drag', 'idleRoutine', 'react', 'perform')
 
 # The official pets all rest between these lines, so a new pet that wants to
 # live next to them should not float above the floor or sink through it.
@@ -70,12 +73,16 @@ def check_pet(entry, problems):
             fail(problems, f'{pet_id}: manifest has no "{key}"')
     if manifest.get('id') != pet_id:
         fail(problems, f'{pet_id}: manifest id is {manifest.get("id")!r}')
-    if manifest.get('spriteVersionNumber') != 2:
-        fail(problems, f'{pet_id}: spriteVersionNumber is not 2')
+    version = manifest.get('spriteVersionNumber')
+    if version not in ROWS_BY_VERSION:
+        fail(problems, f'{pet_id}: spriteVersionNumber is {version!r}')
+        return
+    rows = ROWS_BY_VERSION[version]
     if manifest.get('cell') != {'width': CELL_W, 'height': CELL_H}:
         fail(problems, f'{pet_id}: cell is {manifest.get("cell")}')
-    if manifest.get('grid') != {'columns': COLS, 'rows': ROWS}:
-        fail(problems, f'{pet_id}: grid is {manifest.get("grid")}')
+    if manifest.get('grid') != {'columns': COLS, 'rows': rows}:
+        fail(problems, f'{pet_id}: grid is {manifest.get("grid")}, expected '
+                        f'{COLS} columns and {rows} rows for v{version}')
     sheet = manifest.get('spritesheetPath')
     if not isinstance(sheet, str) or not sheet.endswith('.webp'):
         fail(problems, f'{pet_id}: spritesheetPath {sheet!r} is not a .webp')
@@ -86,8 +93,11 @@ def check_pet(entry, problems):
         if not any(spec.get('row') == row for spec in animations.values()):
             fail(problems, f'{pet_id}: no animation on row {row}')
     look = manifest.get('look') or {}
-    if look.get('rows') != [9, 10] or look.get('count') != 16:
-        fail(problems, f'{pet_id}: look is {look}')
+    if version == 2:
+        if look.get('rows') != [9, 10] or look.get('count') != 16:
+            fail(problems, f'{pet_id}: look is {look}')
+    elif look:
+        fail(problems, f'{pet_id}: a v1 atlas has no gaze rows, but look is set')
     react = manifest.get('react') or {}
     if react.get('click') not in animations:
         fail(problems, f'{pet_id}: react.click is not an animation')
@@ -110,9 +120,9 @@ def check_pet(entry, problems):
         return
     with Image.open(sheet_path) as atlas:
         atlas = atlas.convert('RGBA')
-        if atlas.size != (ATLAS_W, ATLAS_H):
+        if atlas.size != (ATLAS_W, CELL_H * rows):
             fail(problems, f'{pet_id}: atlas is {atlas.size}, expected '
-                            f'{ATLAS_W}x{ATLAS_H}')
+                            f'{ATLAS_W}x{CELL_H * rows}')
             return
         alpha = atlas.getchannel('A')
 
@@ -133,8 +143,9 @@ def check_pet(entry, problems):
             frames = len(spec.get('durations') or [])
             for frame in range(frames):
                 check_cell(frame, row, name)
-        for index in range(16):
-            check_cell(index % 8, 9 + index // 8, 'look')
+        if version == 2:
+            for index in range(16):
+                check_cell(index % 8, 9 + index // 8, 'look')
         rest = alpha.crop((0, 0, ATLAS_W, CELL_H)).getbbox()
         if rest is None:
             fail(problems, f'{pet_id}: the idle row is empty')
