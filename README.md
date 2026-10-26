@@ -70,8 +70,6 @@ dsh plugin --profile desktop add ./dsh-pet
 - 想用现成的：在设置页安装，或者 `node tools/install-pet.mjs <id | 链接 | zip | 目录>`；
 - 想做自己的：把图集和 manifest 放进 `~/.dsh/pets/<id>/`；手上已有 Codex 宠物的话，`python3 tools/port_custom_pet.py` 能直接转过来。
 
-格式与动画行的细节见 [docs/internals.md](docs/internals.md)。
-
 ## 开发
 
 ```sh
@@ -84,5 +82,3 @@ python3 tools/check_pets.py         # 图集契约
 ```
 
 不开窗口检查一只宠物画得对不对：`bin/dsh-pet-macos --describe --pet-dir pets/deepseek-whale`。
-
-实现笔记（原生助手为什么存在、拖动排查、踩过的坑）在 [docs/internals.md](docs/internals.md)。
