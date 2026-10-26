@@ -24,7 +24,7 @@ DSH Desktop 的 macOS 桌面宠物：一只 DeepSeek 小鲸鱼浮在所有窗口
 dsh plugin --profile desktop add github:jusong/dsh-pet
 ```
 
-要固定版本就带上 tag，例如 `github:jusong/dsh-pet#v0.6.0`。
+要固定版本就带上 tag，例如 `github:jusong/dsh-pet#v0.7.0`。
 
 要改代码就用本地目录。这时 DSH 只建一个 `link:`，不会替这个 checkout 装依赖，得自己先装一次：
 
