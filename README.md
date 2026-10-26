@@ -18,14 +18,16 @@ DSH Desktop 的 macOS 桌面宠物：一只 DeepSeek 小鲸鱼浮在所有窗口
 
 需要 macOS 13+ 和 DSH Desktop 0.2.1+。
 
+插件只有一个依赖（`@deepseek-ai/schemastery`）。本地目录安装是以 `link:` 链进 profile 的，DSH 不会替这个 checkout 装依赖，所以先装一次：
+
 ```sh
-dsh plugin --profile desktop add ./dsh-pet
+npm install        # 或 pnpm install
 ```
 
-插件只有一个依赖，安装前先装好：
+再挂到 profile 上：
 
 ```sh
-npm install
+dsh plugin --profile desktop add ./dsh-pet
 ```
 
 重启 DSH，鲸鱼会出现在屏幕右下、输入框上方。
