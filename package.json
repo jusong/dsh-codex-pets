@@ -1,6 +1,6 @@
 {
   "name": "dsh-codex-pets",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "private": true,
   "description": "A floating DeepSeek whale desktop pet for DSH Desktop (macOS).",
   "license": "MIT",

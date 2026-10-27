@@ -18,21 +18,35 @@ eq(clampSessionLimit(7.4), 7, 'a fraction rounds')
 const records = [
   { id: 'old', createdAt: 100, lastPromptAt: 200 },
   { id: 'new', createdAt: 50, lastPromptAt: 900 },
-  { id: 'child', createdAt: 9999, parentSession: 'new', lastPromptAt: 9999 },
+  { id: 'subagent', createdAt: 9999, origin: 'subagent', delegationDepth: 1, lastPromptAt: 9999 },
+  { id: 'side-thread', createdAt: 300, parentSession: 'new', delegationDepth: 0, lastPromptAt: 600 },
   { id: 'blank', createdAt: 800, blank: true },
   { id: 'busy-blank', createdAt: 10, blank: true, running: true },
   { id: 'nope id', createdAt: 99999 },
   { id: 'idle-recent', createdAt: 1, lastPromptAt: 500 },
 ]
 eq(rankSessions(records, { limit: 10 }).map((item) => item.id),
-  ['new', 'idle-recent', 'old', 'busy-blank'],
-  'last interaction first; children, blank and bad ids are left out')
+  ['new', 'side-thread', 'idle-recent', 'old', 'busy-blank'],
+  'last interaction first; subagents, blank sessions and bad ids are left out, side threads stay')
 eq(rankSessions(records, { limit: 10 }).map((item) => item.status),
-  ['idle', 'idle', 'idle', 'running'],
+  ['idle', 'idle', 'idle', 'idle', 'running'],
   'only a running session is marked running, and busy does not reorder')
 eq(rankSessions(records, { limit: 2 }).map((item) => item.id),
-  ['new', 'idle-recent'],
+  ['new', 'side-thread'],
   'the limit cuts the list after the ranking')
+eq(rankSessions([
+  { id: 'seeded-child', createdAt: 10, parentSession: 'parent', delegationDepth: 0, lastPromptAt: 900 },
+  { id: 'recent', createdAt: 800, lastPromptAt: 850 },
+], { limit: 5 }).map((item) => item.id),
+  ['seeded-child', 'recent'],
+  'a seeded side/fork session is user-facing and keeps its own place')
+eq(rankSessions([
+  { id: 'delegated', parentSession: 'parent', origin: 'subagent', delegationDepth: 1, createdAt: 900 },
+  { id: 'nested', parentSession: 'parent', delegationDepth: 2, createdAt: 900 },
+  { id: 'top', createdAt: 10, lastPromptAt: 500 },
+], { limit: 5 }).map((item) => item.id),
+  ['top'],
+  'delegated subagents stay out, with or without the origin label')
 eq(rankSessions([
   { id: 'running-old', createdAt: 100, lastPromptAt: 200, running: true },
   { id: 'just-touched', createdAt: 10, lastPromptAt: 900 },
