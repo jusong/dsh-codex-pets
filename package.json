@@ -3,6 +3,7 @@
   "version": "0.7.3",
   "private": true,
   "description": "A floating DeepSeek whale desktop pet for DSH Desktop (macOS).",
+  "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

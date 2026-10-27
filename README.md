@@ -104,3 +104,9 @@ python3 tools/check_pets.py         # 图集契约
 ```
 
 不开窗口检查一只宠物画得对不对：`bin/dsh-pet-macos --describe --pet-dir pets/deepseek-whale`。
+
+## 许可
+
+代码和内置宠物（`pets/deepseek-whale`）以 **MIT** 许可证发布，见 [LICENSE](LICENSE)。
+
+Codex 官方那 9 只宠物是 OpenAI 的第一方资产，**不在本仓库中分发**：设置页的「从 Codex 导入」只读本机 `~/.codex/pets` 和 `ChatGPT.app` 里已有的副本，装进你自己的 `~/.dsh/pets/`，不涉及再分发。从 codex-pets.net 安装的社区宠物各自由其作者授权。
