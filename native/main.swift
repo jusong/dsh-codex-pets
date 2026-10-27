@@ -1297,7 +1297,7 @@ final class PetController: NSObject, NSApplicationDelegate {
             default: break
             }
         }
-        size = min(260, max(120, size))
+        size = min(Self.maxEdge, max(Self.minEdge, size))
     }
 
     /// One pet per DSH host: a second helper exits instead of stacking windows.
@@ -1698,7 +1698,7 @@ final class PetController: NSObject, NSApplicationDelegate {
     }
 
     private static let maxEdge: CGFloat = 260
-    private static let minEdge: CGFloat = 120
+    private static let minEdge: CGFloat = 80
     /// How long the slider has to rest before the window is fitted to the pet.
     private static let settleDelay: TimeInterval = 0.25
     private var settleTimer: Timer?
