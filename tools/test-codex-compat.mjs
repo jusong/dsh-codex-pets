@@ -5,7 +5,7 @@
  * Hermetic: the plugin is copied into a temp project and fed temp pets, the
  * registry is a local HTTP server, and the atlases are header-only stand-ins
  * (nothing here decodes pixels; the native side is covered by
- * `dsh-pet-macos --describe`).
+ * `dsh-codex-pets-macos --describe`).
  *
  *   node tools/test-codex-compat.mjs
  */
@@ -112,7 +112,7 @@ eq(again.look, undefined, 'a v1 shipped pet has no look rows')
 // ---------------------------------------------------------------------------
 console.log('host: gallery and routes with plain Codex pets')
 
-const project = mkdtempSync(join(tmpdir(), 'dsh-pet-compat-'))
+const project = mkdtempSync(join(tmpdir(), 'dsh-codex-pets-compat-'))
 mkdirSync(join(project, 'lib'))
 for (const file of ['index.js', 'codex-pet.js', 'pet-store.js', 'session-ball.js']) copyFileSync(join(ROOT, 'lib', file), join(project, 'lib', file))
 symlinkSync(join(ROOT, 'node_modules'), join(project, 'node_modules'))
@@ -120,7 +120,7 @@ const pets = join(project, 'pets')
 const userPets = join(project, 'user-pets')
 mkdirSync(pets)
 mkdirSync(userPets)
-process.env.DSH_PET_USER_DIR = userPets
+process.env.DSH_CODEX_PETS_USER_DIR = userPets
 
 function putPet(root, dir, manifest, sheets = {}) {
   const folder = join(root, dir)
@@ -160,7 +160,7 @@ host.apply({
 }, { pet: 'indexed', size: 180 })
 const call = (path, query = '') => routes.get(path).fetch(new Request(`http://x${path}${query}`))
 
-const gallery = (await (await call('/api/dsh-pet/pets')).json()).pets
+const gallery = (await (await call('/api/dsh-codex-pets/pets')).json()).pets
 eq(gallery.map((p) => p.id), ['indexed', 'alpha-v2', 'evil-preview', 'folder-name', 'no-version', 'zeta-v1'],
   'bundled index first, then user pets by name; broken, unsafe and invalid ones are left out')
 eq(gallery.find((p) => p.id === 'indexed').bundled, true, 'an indexed pet is bundled')
@@ -181,7 +181,7 @@ eq(byId['indexed'].hasPreview, true, 'a pet with a preview says so')
 eq(byId['zeta-v1'].hasPreview, false, 'a Codex pet has no preview file')
 eq(byId['evil-preview'].hasPreview, false, 'a preview path out of the folder is dropped')
 
-const sheetOf = async (id) => call('/api/dsh-pet/sprite', `?id=${id}`)
+const sheetOf = async (id) => call('/api/dsh-codex-pets/sprite', `?id=${id}`)
 const webp = await sheetOf('zeta-v1')
 eq([webp.status, webp.headers.get('content-type')], [200, 'image/webp'], 'a webp atlas is served as webp')
 eq(Buffer.from(await webp.arrayBuffer()).equals(V1), true, 'with its own bytes')
@@ -190,8 +190,8 @@ eq((await sheetOf('evil')).status, 404, 'an atlas path that leaves the folder is
 eq((await sheetOf('no-sheet')).status, 404, 'a missing atlas is 404')
 eq((await sheetOf('Bad_Name')).status, 404, 'an invalid directory name is 404')
 eq((await sheetOf('..')).status, 404, '".." is 404')
-eq((await call('/api/dsh-pet/preview', '?id=zeta-v1')).status, 404, 'no preview file is 404, so the page cuts its own')
-eq((await call('/api/dsh-pet/preview', '?id=indexed')).headers.get('content-type'), 'image/png', 'a preview is served')
+eq((await call('/api/dsh-codex-pets/preview', '?id=zeta-v1')).status, 404, 'no preview file is 404, so the page cuts its own')
+eq((await call('/api/dsh-codex-pets/preview', '?id=indexed')).headers.get('content-type'), 'image/png', 'a preview is served')
 
 // ---------------------------------------------------------------------------
 console.log('installer')
@@ -200,7 +200,7 @@ const logs = []
 const install = async (...argv) => { logs.length = 0; const code = await run(argv, (line) => logs.push(line)); return { code, out: logs.join('\n') } }
 const dest = join(project, 'installed')
 const folderOf = (id) => join(dest, id)
-const stagings = () => readdirSync(tmpdir()).filter((name) => name.startsWith('dsh-pet-install-')).length
+const stagings = () => readdirSync(tmpdir()).filter((name) => name.startsWith('dsh-codex-pets-install-')).length
 const stagingsBefore = stagings()
 
 eq(parseArgs(['a', '--force', '--id', 'x']).force, true, 'flags parse')
@@ -370,10 +370,10 @@ for (const id of ['zeta-v1', 'remote-whale', 'zippy']) {
   rmSync(join(userPets, id), { recursive: true, force: true })
   execFileSync('cp', ['-R', folderOf(id), join(userPets, id)])
 }
-const after = (await (await call('/api/dsh-pet/pets')).json()).pets.map((p) => p.id)
+const after = (await (await call('/api/dsh-codex-pets/pets')).json()).pets.map((p) => p.id)
 for (const id of ['zeta-v1', 'remote-whale', 'zippy']) ok(after.includes(id), `an installed pet (${id}) shows in the gallery with no registration`)
 ok(after.find((id) => id === 'indexed') === 'indexed', 'the bundled pet still leads')
-const zippy = (await (await call('/api/dsh-pet/pets')).json()).pets.find((p) => p.id === 'zippy')
+const zippy = (await (await call('/api/dsh-codex-pets/pets')).json()).pets.find((p) => p.id === 'zippy')
 eq(zippy.bundled, false, 'a user install is not bundled')
 eq(zippy.look.rows, [9, 10], 'and carries its look rows')
 eq((await sheetOf('remote-whale')).status, 200, 'and its atlas is served')

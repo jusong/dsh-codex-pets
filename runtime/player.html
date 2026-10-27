@@ -118,10 +118,10 @@
 
 <script>
   // The native helper injects the manifest before this page runs.
-  const manifest = window.__DSH_PET_MANIFEST__ || null
+  const manifest = window.__DSH_CODEX_PETS_MANIFEST__ || null
 
   if (!manifest) {
-    console.error('dsh-pet: no manifest was injected')
+    console.error('dsh-codex-pets: no manifest was injected')
   } else {
     const canvas = document.getElementById('pet')
     canvas.setAttribute('aria-label', `${manifest.name || 'DSH 宠物'}：点击回到 DSH · 拖动可移动`)
@@ -138,7 +138,7 @@
       return id
     }
 
-    window.addEventListener('dsh-pet-splash', (event) => {
+    window.addEventListener('dsh-codex-pets-splash', (event) => {
       const kind = event.detail && event.detail.kind === 'sparkle' ? 'sparkle' : 'water'
       for (let index = 0; index < 20; index += 1) {
         const particle = document.createElement('span')

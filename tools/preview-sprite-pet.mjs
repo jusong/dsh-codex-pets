@@ -45,7 +45,7 @@ html = html.replace('</head>', `${scripts}\n</head>`)
 // script tag. The atlas path stays relative because this page lives in the
 // pet's own directory, exactly like the native player does.
 const json = JSON.stringify(manifest).replace(/</g, '\\u003c')
-const injected = `<script>window.__DSH_PET_MANIFEST__ = ${json};</script>`
+const injected = `<script>window.__DSH_CODEX_PETS_MANIFEST__ = ${json};</script>`
 html = html.replace('</head>', `${injected}\n</head>`)
 
 const out = join(petDir, '__preview.html')

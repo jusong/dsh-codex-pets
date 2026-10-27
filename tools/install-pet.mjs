@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Install pets made for Codex into the user pet store (`~/.dsh/pets`).
+ * Install pets made for Codex into the user pet store (`~/.dsh/dsh-codex-pets`).
  *
  *   node tools/install-pet.mjs deepseek
  *   node tools/install-pet.mjs https://codex-pets.net/#/pets/deepseek
@@ -14,7 +14,7 @@
  *   a folder with pet.json           e.g. anything under ~/.codex/pets
  *   a .zip (file or URL)             the package the site's Download gives
  *
- * and is installed as `~/.dsh/pets/<id>/` holding the `pet.json` and the atlas.
+ * and is installed as `~/.dsh/dsh-codex-pets/<id>/` holding the `pet.json` and the atlas.
  * That is the whole Codex format, so a pet needs nothing else: the plugin fills
  * in the rows and timings the Codex contract fixes, and the settings page picks
  * the pet up on its next refresh. Nothing has to be registered. Shipped pets
@@ -25,7 +25,7 @@
  *   --force             replace a pet that is already installed under that id
  *   --codex-home        read bare ids from ~/.codex/pets instead of the registry
  *   --registry <url>    another registry host (default https://codex-pets.net)
- *   --pets-dir <dir>    install somewhere else (default: ~/.dsh/pets)
+ *   --pets-dir <dir>    install somewhere else (default: ~/.dsh/dsh-codex-pets)
  *   --dry-run           check the source and say what would happen
  *
  * No dependencies: Node 18+, and `unzip` (macOS has it) for zip packages.
@@ -108,7 +108,7 @@ export async function run(argv, log = console.log) {
 
   let failures = 0
   for (const arg of options.sources) {
-    const staging = mkdtempSync(join(tmpdir(), 'dsh-pet-install-'))
+    const staging = mkdtempSync(join(tmpdir(), 'dsh-codex-pets-install-'))
     try {
       const source = classifySource(arg, options)
       let folder = staging
@@ -149,7 +149,7 @@ export async function run(argv, log = console.log) {
 }
 
 function usage() {
-  return `Install pets made for Codex into ~/.dsh/pets.
+  return `Install pets made for Codex into ~/.dsh/dsh-codex-pets.
 
   node tools/install-pet.mjs <source>... [options]
 
@@ -164,7 +164,7 @@ options
   --id <id>         install under another directory name
   --force           replace a pet already installed under that id
   --registry <url>  another registry host (default ${DEFAULT_REGISTRY})
-  --pets-dir <dir>  install somewhere else (default: ~/.dsh/pets)
+  --pets-dir <dir>  install somewhere else (default: ~/.dsh/dsh-codex-pets)
   --dry-run         check only`
 }
 

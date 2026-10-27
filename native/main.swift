@@ -4,7 +4,7 @@ import ImageIO
 import QuartzCore
 
 /**
- * dsh-pet: a tiny macOS helper that owns the always-on-top pet window.
+ * dsh-codex-pets: a tiny macOS helper that owns the always-on-top pet window.
  *
  * The DSH host plugin spawns this binary, passes the pet directory and its
  * own PID, and kills it on unload. The window is an NSPanel at floating
@@ -1233,7 +1233,7 @@ final class PetController: NSObject, NSApplicationDelegate {
         }
         acquireLock()
         guard let manifest = PetManifest(directory: URL(fileURLWithPath: petDir)) else {
-            NSLog("dsh-pet: no usable pet manifest in \(petDir), exiting")
+            NSLog("dsh-codex-pets: no usable pet manifest in \(petDir), exiting")
             NSApp.terminate(nil)
             return
         }
@@ -1241,7 +1241,7 @@ final class PetController: NSObject, NSApplicationDelegate {
             manifest: manifest,
             reducedMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         ) else {
-            NSLog("dsh-pet: cannot read the atlas at \(manifest.atlasURL.path), exiting")
+            NSLog("dsh-codex-pets: cannot read the atlas at \(manifest.atlasURL.path), exiting")
             NSApp.terminate(nil)
             return
         }

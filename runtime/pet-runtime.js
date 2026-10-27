@@ -28,7 +28,7 @@
       try {
         return pet?.perform?.() ?? 0
       } catch (error) {
-        console.error('dsh-pet: perform failed', error)
+        console.error('dsh-codex-pets: perform failed', error)
         return 0
       }
     },
@@ -36,7 +36,7 @@
       try {
         pet?.interrupt?.()
       } catch (error) {
-        console.error('dsh-pet: interrupt failed', error)
+        console.error('dsh-codex-pets: interrupt failed', error)
       }
     },
     /**
@@ -50,7 +50,7 @@
       try {
         pet?.lookOut?.()
       } catch (error) {
-        console.error('dsh-pet: lookOut failed', error)
+        console.error('dsh-codex-pets: lookOut failed', error)
       }
     },
     /**
@@ -65,7 +65,7 @@
       try {
         pet?.lookAt?.(x, y)
       } catch (error) {
-        console.error('dsh-pet: look failed', error)
+        console.error('dsh-codex-pets: look failed', error)
       }
     },
     /**
@@ -80,7 +80,7 @@
         if (typeof pet?.react === 'function') pet.react()
         else pet?.interrupt?.()
       } catch (error) {
-        console.error('dsh-pet: react failed', error)
+        console.error('dsh-codex-pets: react failed', error)
       }
     },
   }

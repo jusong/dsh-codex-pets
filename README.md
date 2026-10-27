@@ -1,4 +1,4 @@
-# dsh-pet
+# dsh-codex-pets
 
 ![deepseek-whale](pets/deepseek-whale/preview.png)
 
@@ -21,16 +21,16 @@ DSH Desktop 的 macOS 桌面宠物：一只 DeepSeek 小鲸鱼浮在所有窗口
 直接从 GitHub 装，插件的依赖由 profile 的 pnpm 一起装好：
 
 ```sh
-dsh plugin --profile desktop add github:jusong/dsh-pet
+dsh plugin --profile desktop add github:jusong/dsh-codex-pets
 ```
 
-要固定版本就带上 tag，例如 `github:jusong/dsh-pet#v0.7.3`。
+要固定版本就带上 tag，例如 `github:jusong/dsh-codex-pets#v0.8.0`。
 
 要改代码就用本地目录。这时 DSH 只建一个 `link:`，不会替这个 checkout 装依赖，得自己先装一次：
 
 ```sh
 npm install        # 或 pnpm install
-dsh plugin --profile desktop add ./dsh-pet
+dsh plugin --profile desktop add ./dsh-codex-pets
 ```
 
 装完重启 DSH，鲸鱼会出现在屏幕右下、输入框上方。
@@ -38,8 +38,8 @@ dsh plugin --profile desktop add ./dsh-pet
 如果没出现，在 `~/.dsh/profiles/desktop/cordis.patch.yml` 里手动加上这段，让 loader 加载它：
 
 ```yaml
-- id: dsh-pet
-  name: dsh-pet
+- id: dsh-codex-pets
+  name: dsh-codex-pets
   config:
     pet: deepseek-whale
 ```
@@ -56,8 +56,8 @@ dsh plugin --profile desktop add ./dsh-pet
 ## 配置
 
 ```yaml
-- id: dsh-pet
-  name: dsh-pet
+- id: dsh-codex-pets
+  name: dsh-codex-pets
   config:
     pet: deepseek-whale   # pets/<id> 的目录名
     size: 220             # 120–260 px
@@ -66,16 +66,18 @@ dsh plugin --profile desktop add ./dsh-pet
     sessionMotion: false  # 有会话在忙时宠物不闲着，忙完跳一下
 ```
 
+用户装的宠物放在 `~/.dsh/dsh-codex-pets/`，顺序记在同目录的 `pets.json`。旧版用的是 `~/.dsh/pets`，升级后首次启动会自动搬过去。
+
 ## 宠物
 
 内置一只 `deepseek-whale`（v1 图集，8 列 × 9 行）。宠物就是一份 `pet.json` 加一张精灵图集，格式和 Codex 的完全一致。
 
 - 想用现成的：在设置页安装，或者 `node tools/install-pet.mjs <id | 链接 | zip | 目录>`；
-- 想做自己的：把图集和 manifest 放进 `~/.dsh/pets/<id>/`；手上已有 Codex 宠物的话，`python3 tools/port_custom_pet.py` 能直接转过来。
+- 想做自己的：把图集和 manifest 放进 `~/.dsh/dsh-codex-pets/<id>/`；手上已有 Codex 宠物的话，`python3 tools/port_custom_pet.py` 能直接转过来。
 
 ## 原生助手与 `bin/`
 
-悬浮窗不可能用纯 JS 做：透明、置顶、跨 Space、原生拖动都在 `native/main.swift` 编出的 AppKit `NSPanel` 里，`lib/index.js` 只负责把它 `spawn` 起来。所以 `bin/dsh-pet-macos` 是**编译产物，也是随包发布的运行文件**，必须提交进仓库：
+悬浮窗不可能用纯 JS 做：透明、置顶、跨 Space、原生拖动都在 `native/main.swift` 编出的 AppKit `NSPanel` 里，`lib/index.js` 只负责把它 `spawn` 起来。所以 `bin/dsh-codex-pets-macos` 是**编译产物，也是随包发布的运行文件**，必须提交进仓库：
 
 - 安装过程不编译任何东西——`package.json` 没有 `scripts`，`dsh plugin add` 只是拉包、装依赖；
 - 换成安装时现场编译也不合适：pnpm 11 默认拦依赖的构建脚本（要用户手动批准），还要求装 Xcode Command Line Tools；
@@ -85,11 +87,11 @@ dsh plugin --profile desktop add ./dsh-pet
 
 ```sh
 swiftc -O -swift-version 5 -target arm64-apple-macosx13.0 \
-  -framework AppKit -framework QuartzCore native/main.swift -o /tmp/dsh-pet-arm64
+  -framework AppKit -framework QuartzCore native/main.swift -o /tmp/dsh-codex-pets-arm64
 swiftc -O -swift-version 5 -target x86_64-apple-macosx13.0 \
-  -framework AppKit -framework QuartzCore native/main.swift -o /tmp/dsh-pet-x86_64
-lipo -create /tmp/dsh-pet-arm64 /tmp/dsh-pet-x86_64 -output bin/dsh-pet-macos
-codesign --force --sign - bin/dsh-pet-macos
+  -framework AppKit -framework QuartzCore native/main.swift -o /tmp/dsh-codex-pets-x86_64
+lipo -create /tmp/dsh-codex-pets-arm64 /tmp/dsh-codex-pets-x86_64 -output bin/dsh-codex-pets-macos
+codesign --force --sign - bin/dsh-codex-pets-macos
 ```
 
 ## 开发
@@ -103,10 +105,10 @@ node tools/test-session-ball.mjs    # 最近会话球
 python3 tools/check_pets.py         # 图集契约
 ```
 
-不开窗口检查一只宠物画得对不对：`bin/dsh-pet-macos --describe --pet-dir pets/deepseek-whale`。
+不开窗口检查一只宠物画得对不对：`bin/dsh-codex-pets-macos --describe --pet-dir pets/deepseek-whale`。
 
 ## 许可
 
 代码和内置宠物（`pets/deepseek-whale`）以 **MIT** 许可证发布，见 [LICENSE](LICENSE)。
 
-Codex 官方那 9 只宠物是 OpenAI 的第一方资产，**不在本仓库中分发**：设置页的「从 Codex 导入」只读本机 `~/.codex/pets` 和 `ChatGPT.app` 里已有的副本，装进你自己的 `~/.dsh/pets/`，不涉及再分发。从 codex-pets.net 安装的社区宠物各自由其作者授权。
+Codex 官方那 9 只宠物是 OpenAI 的第一方资产，**不在本仓库中分发**：设置页的「从 Codex 导入」只读本机 `~/.codex/pets` 和 `ChatGPT.app` 里已有的副本，装进你自己的 `~/.dsh/dsh-codex-pets/`，不涉及再分发。从 codex-pets.net 安装的社区宠物各自由其作者授权。

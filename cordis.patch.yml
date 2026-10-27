@@ -1,7 +1,7 @@
 # Host-only bundle: lib/index.js spawns the native macOS pet helper.
 - insert:
-    - id: dsh-pet
-      name: dsh-pet
+    - id: dsh-codex-pets
+      name: dsh-codex-pets
       config:
         pet: deepseek-whale
         size: 220

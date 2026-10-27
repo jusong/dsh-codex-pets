@@ -124,7 +124,7 @@ final class Renderer: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKS
         (function loop() { window.__rafCount++; requestAnimationFrame(loop); })();
         // The pet instance, so a test can read the engine's state.
         window.__pet = null;
-        window.addEventListener('dsh-pet-ready', function (event) {
+        window.addEventListener('dsh-codex-pets-ready', function (event) {
           window.__pet = event.detail.pet;
         });
         """
@@ -132,7 +132,7 @@ final class Renderer: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKS
             source: probeScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
 
         configuration.userContentController.addUserScript(WKUserScript(
-            source: "window.__DSH_PET_MANIFEST__ = \(manifestJSON);",
+            source: "window.__DSH_CODEX_PETS_MANIFEST__ = \(manifestJSON);",
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true))
 
@@ -252,7 +252,7 @@ final class Renderer: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKS
           probe.src = 'spritesheet.webp';
           var info = {
             errors: window.__dshErrors || [],
-            manifest: !!window.__DSH_PET_MANIFEST__,
+            manifest: !!window.__DSH_CODEX_PETS_MANIFEST__,
             engine: !!window.DSHSpritePet,
             img: window.__imgTests || {},
             backing: canvas ? [canvas.width, canvas.height] : null,

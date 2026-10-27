@@ -1,7 +1,7 @@
 /**
  * Sprite pet engine.
  *
- * This is the dsh-pet counterpart of the Codex pet player. A sprite pet is
+ * This is the dsh-codex-pets counterpart of the Codex pet player. A sprite pet is
  * pure data -- a manifest plus a sprite atlas -- and every bit of playback
  * behaviour lives here, so adding a pet never means writing another page.
  *
@@ -156,7 +156,7 @@
           this.start()
           resolve(this)
         }
-        image.onerror = () => reject(new Error(`dsh-pet: cannot load atlas ${this.manifest.spritesheetPath}`))
+        image.onerror = () => reject(new Error(`dsh-codex-pets: cannot load atlas ${this.manifest.spritesheetPath}`))
         image.src = this.manifest.spritesheetPath
       })
     }
@@ -370,7 +370,7 @@
     }
 
     splash() {
-      window.dispatchEvent(new CustomEvent('dsh-pet-splash', {
+      window.dispatchEvent(new CustomEvent('dsh-codex-pets-splash', {
         detail: { kind: this.performSpec.splash === true ? 'water' : this.performSpec.splash },
       }))
     }
@@ -646,7 +646,7 @@
    */
   function mount(manifest, options = {}) {
     if (!manifest || !manifest.spritesheetPath) {
-      console.error('dsh-pet: manifest has no spritesheetPath')
+      console.error('dsh-codex-pets: manifest has no spritesheetPath')
       return null
     }
     const pet = new SpritePet(manifest, options)
@@ -661,9 +661,9 @@
           react: () => pet.react(),
         })
       }
-      window.dispatchEvent(new CustomEvent('dsh-pet-ready', { detail: { pet } }))
+      window.dispatchEvent(new CustomEvent('dsh-codex-pets-ready', { detail: { pet } }))
     }).catch((error) => {
-      console.error('dsh-pet: sprite pet failed to start', error)
+      console.error('dsh-codex-pets: sprite pet failed to start', error)
     })
     window.addEventListener('resize', () => pet.resize())
     if (typeof ResizeObserver === 'undefined') {

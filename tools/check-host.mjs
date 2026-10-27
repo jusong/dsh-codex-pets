@@ -1,12 +1,12 @@
 /**
- * Host-side check for the dsh-pet plugin.
+ * Host-side check for the dsh-codex-pets plugin.
  *
  * Loads the real `lib/index.js` with a stub DSH context, mounts the plugin,
  * and then calls the very Fetch routes the settings page uses. Nothing here
  * is mocked: the gallery is read from `pets/index.json`, the manifests from
  * `pets/<id>/pet.json`, and the bytes come off disk.
  *
- * Uses an empty `DSH_PET_USER_DIR` so startup does not migrate loose folders
+ * Uses an empty `DSH_CODEX_PETS_USER_DIR` so startup does not migrate loose folders
  * out of the package tree (developer checkouts often keep extras there).
  *
  *   node tools/check-host.mjs
@@ -16,7 +16,7 @@ import { existsSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-process.env.DSH_PET_USER_DIR = mkdtempSync(join(tmpdir(), 'dsh-pet-check-user-'))
+process.env.DSH_CODEX_PETS_USER_DIR = mkdtempSync(join(tmpdir(), 'dsh-codex-pets-check-user-'))
 
 const { apply } = await import('../lib/index.js')
 
@@ -50,22 +50,22 @@ apply(ctx, { pet: 'deepseek-whale', size: 180 })
 
 assert.equal(routes.size, 9, 'the plugin registers nine Fetch routes')
 for (const path of [
-  '/api/dsh-pet/pets',
-  '/api/dsh-pet/sprite',
-  '/api/dsh-pet/preview',
-  '/api/dsh-pet/install',
-  '/api/dsh-pet/remove',
-  '/api/dsh-pet/reorder',
-  '/api/dsh-pet/codex-pets',
-  '/api/dsh-pet/import-codex',
-  '/api/dsh-pet/focus',
+  '/api/dsh-codex-pets/pets',
+  '/api/dsh-codex-pets/sprite',
+  '/api/dsh-codex-pets/preview',
+  '/api/dsh-codex-pets/install',
+  '/api/dsh-codex-pets/remove',
+  '/api/dsh-codex-pets/reorder',
+  '/api/dsh-codex-pets/codex-pets',
+  '/api/dsh-codex-pets/import-codex',
+  '/api/dsh-codex-pets/focus',
 ]) {
   assert.ok(routes.has(path), `route ${path} is registered`)
 }
 
 // ---- the gallery ---------------------------------------------------------
 
-const gallery = await routes.get('/api/dsh-pet/pets').fetch(new Request('http://x/api/dsh-pet/pets'))
+const gallery = await routes.get('/api/dsh-codex-pets/pets').fetch(new Request('http://x/api/dsh-codex-pets/pets'))
 assert.equal(gallery.status, 200, 'the gallery answers 200')
 const payload = await gallery.json()
 const pets = payload.pets
@@ -97,18 +97,18 @@ for (const pet of pets.filter((entry) => entry.bundled)) {
 
 // ---- the sprite and the preview -----------------------------------------
 
-const sprite = await routes.get('/api/dsh-pet/sprite').fetch(new Request('http://x/api/dsh-pet/sprite?id=deepseek-whale'))
+const sprite = await routes.get('/api/dsh-codex-pets/sprite').fetch(new Request('http://x/api/dsh-codex-pets/sprite?id=deepseek-whale'))
 assert.equal(sprite.status, 200, 'the shipped sprite answers 200')
 assert.equal(sprite.headers.get('content-type'), 'image/webp', 'the sprite is a webp')
 const sheet = new Uint8Array(await sprite.arrayBuffer())
 assert.ok(sheet.byteLength > 1000, 'the atlas has content')
 
-const preview = await routes.get('/api/dsh-pet/preview').fetch(new Request('http://x/api/dsh-pet/preview?id=deepseek-whale'))
+const preview = await routes.get('/api/dsh-codex-pets/preview').fetch(new Request('http://x/api/dsh-codex-pets/preview?id=deepseek-whale'))
 assert.equal(preview.status, 200, 'the preview answers 200')
 assert.equal(preview.headers.get('content-type'), 'image/png', 'the preview is a png')
 assert.ok((await preview.arrayBuffer()).byteLength > 1000, 'the preview has content')
 
-const missing = await routes.get('/api/dsh-pet/sprite').fetch(new Request('http://x/api/dsh-pet/sprite?id=hoots'))
+const missing = await routes.get('/api/dsh-codex-pets/sprite').fetch(new Request('http://x/api/dsh-codex-pets/sprite?id=hoots'))
 assert.equal(missing.status, 404, 'a removed pet answers 404')
 
 console.log('\nhost check: all assertions passed')
