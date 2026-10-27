@@ -72,6 +72,8 @@ const pets = payload.pets
 
 console.log('current:', JSON.stringify(payload.current))
 assert.equal(payload.current.visible, true, 'the pet shows unless the profile hides it')
+assert.equal(payload.current.sessions, true, 'the session ball is on by default')
+assert.equal(payload.current.sessionMotion, true, 'the pet reacts to tasks by default')
 console.log('gallery:')
 for (const pet of pets) {
   const flag = pet.bundled ? 'bundled' : 'user'
