@@ -1549,20 +1549,35 @@ final class PetController: NSObject, NSApplicationDelegate {
         writeDragLog(byServer: byServer)
     }
 
-    /// The pet has no title bar, so its right-click menu is the way off the
-    /// screen. The host owns the setting and stops this helper.
+    /// The pet has no title bar, so its right-click menu is the way to its
+    /// settings and off the screen.
     func showMenu(with event: NSEvent) {
         guard let view = panel.contentView else { return }
         let chinese = Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
         let menu = NSMenu()
+        let settings = NSMenuItem(
+            title: chinese ? "设置" : "Settings",
+            action: #selector(openSettingsPage),
+            keyEquivalent: ""
+        )
+        settings.target = self
+        settings.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
+        menu.addItem(settings)
         let hide = NSMenuItem(
             title: chinese ? "隐藏宠物" : "Hide Pet",
             action: #selector(hidePet),
             keyEquivalent: ""
         )
         hide.target = self
+        hide.image = NSImage(systemSymbolName: "eye.slash", accessibilityDescription: nil)
         menu.addItem(hide)
         NSMenu.popUpContextMenu(menu, with: event, for: view)
+    }
+
+    /// Bring DSH forward and let the page open Settings at this plugin's page.
+    @objc private func openSettingsPage() {
+        activateDSH()
+        FileHandle.standardOutput.write(Data("settings\n".utf8))
     }
 
     @objc private func hidePet() {
