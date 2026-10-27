@@ -1174,6 +1174,7 @@ final class PetView: NSView {
     override func mouseDown(with event: NSEvent) { controller?.beginDrag(with: event) }
     override func mouseDragged(with event: NSEvent) { controller?.continueDrag() }
     override func mouseUp(with event: NSEvent) { controller?.endDrag() }
+    override func rightMouseDown(with event: NSEvent) { controller?.showMenu(with: event) }
 }
 
 final class PetController: NSObject, NSApplicationDelegate {
@@ -1546,6 +1547,28 @@ final class PetController: NSObject, NSApplicationDelegate {
             player.react()
         }
         writeDragLog(byServer: byServer)
+    }
+
+    /// The pet has no title bar, so its right-click menu is the way off the
+    /// screen. The host owns the setting and stops this helper.
+    func showMenu(with event: NSEvent) {
+        guard let view = panel.contentView else { return }
+        let chinese = Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
+        let menu = NSMenu()
+        let hide = NSMenuItem(
+            title: chinese ? "隐藏宠物" : "Hide Pet",
+            action: #selector(hidePet),
+            keyEquivalent: ""
+        )
+        hide.target = self
+        menu.addItem(hide)
+        NSMenu.popUpContextMenu(menu, with: event, for: view)
+    }
+
+    @objc private func hidePet() {
+        // The host writes `visible: false` and stops the helper; asking for
+        // it here keeps the settings switch in step.
+        FileHandle.standardOutput.write(Data("hide\n".utf8))
     }
 
     /// A 4ms heartbeat while dragging: the longest gap between two beats is

@@ -11,6 +11,7 @@ DSH Desktop 的 macOS 桌面宠物：一只 DeepSeek 小鲸鱼浮在所有窗口
 - **拖动跟手**：窗口按屏幕刷新率跟随光标，位置记住，下次启动还在原处。
 - **自己会动**：闲时轮流演小动作，偶尔来一次带粒子的表演；系统开了「减少动态效果」时只显示静态帧。
 - **可换可调**：设置 → 宠物里挑宠物、拉大小（120–260 px），即时生效，不用重启 DSH。
+- **可开可关**：设置里关掉「显示宠物」，或者在宠物上右键选「隐藏宠物」，鲸鱼就从桌面上收起来，再打开时回到原来的位置。
 - **更多宠物**：兼容 Codex 的宠物格式，可以从 [codex-pets.net](https://codex-pets.net) 装，也可以从本机 Codex 一键导入。
 - **最近会话球**（可选）：宠物脚下显示会话数，点开就能跳到你正在等的那个会话。
 
@@ -48,6 +49,7 @@ dsh plugin --profile desktop add ./dsh-codex-pets
 
 **设置 → 宠物**（也挂在「插件 → 内置插件配置 → 桌面宠物」下）：
 
+- 顶部的「显示宠物」开关控制它是否留在桌面上；在宠物上右键也有「隐藏宠物」；
 - 点画廊里的卡片切换宠物，上方的预览和尺寸滑块跟着变；
 - 在输入框里粘 codex-pets.net 的宠物 ID 或页面链接即可安装，装完排到「已安装」末尾；
 - 「从 Codex 导入」会把 `~/.codex/pets` 里还没导入的、以及 Codex 自带（打在 `ChatGPT.app` 里）的宠物一起装进来；
@@ -61,6 +63,7 @@ dsh plugin --profile desktop add ./dsh-codex-pets
   config:
     pet: deepseek-whale   # pets/<id> 的目录名
     size: 220             # 120–260 px
+    visible: true         # false 隐藏宠物（右键宠物也能隐藏）
     sessions: false       # 脚下的最近会话球
     sessionLimit: 5       # 球里列几条（1–10）
     sessionMotion: false  # 有会话在忙时宠物不闲着，忙完跳一下

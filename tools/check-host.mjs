@@ -71,6 +71,7 @@ const payload = await gallery.json()
 const pets = payload.pets
 
 console.log('current:', JSON.stringify(payload.current))
+assert.equal(payload.current.visible, true, 'the pet shows unless the profile hides it')
 console.log('gallery:')
 for (const pet of pets) {
   const flag = pet.bundled ? 'bundled' : 'user'
