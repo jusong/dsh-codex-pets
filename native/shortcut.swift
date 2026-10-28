@@ -16,6 +16,15 @@ private let shortcutKeys: [String: UInt32] = [
     "I": 34, "P": 35, "L": 37, "J": 38, "K": 40, "N": 45, "M": 46,
 ]
 
+/// The host sends `shortcut` plus one JSON string. A top-level string is a
+/// fragment, so the default JSON parser rejects it and the old hotkey stays.
+func shortcutFromWire(_ raw: String) -> String? {
+    guard let data = raw.data(using: .utf8),
+          let value = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]),
+          let text = value as? String else { return nil }
+    return text
+}
+
 func parseGlobalShortcut(_ value: String) -> GlobalShortcut? {
     let expanded = value
         .replacingOccurrences(of: "⌘", with: "+Command+")

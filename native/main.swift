@@ -2241,8 +2241,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSTextFieldDelegate 
         }
         if line.hasPrefix("shortcut ") {
             let raw = String(line.dropFirst("shortcut ".count))
-            if let data = raw.data(using: .utf8),
-               let value = try? JSONSerialization.jsonObject(with: data) as? String {
+            if let value = shortcutFromWire(raw) {
                 shortcutValue = value
                 setShortcut(value)
             }

@@ -26,7 +26,7 @@ DSH Desktop 的 macOS 桌面宠物：一只 DeepSeek 小鲸鱼浮在所有窗口
 dsh plugin --profile desktop add github:jusong/dsh-codex-pets
 ```
 
-要固定版本就带上 tag，例如 `github:jusong/dsh-codex-pets#v0.11.0`。
+要固定版本就带上 tag，例如 `github:jusong/dsh-codex-pets#v0.11.1`。
 
 装完重启 DSH，鲸鱼会出现在屏幕右下、输入框上方。
 
