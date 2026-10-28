@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src file: data:; style-src file:; script-src file:">
+<link rel="stylesheet" href="pet.css">
+</head>
+<body>
+  <div id="stage">
+    <div id="pet">
+      <div id="shadow"></div>
+      <canvas id="sprite"></canvas>
+      <div id="splash"></div>
+    </div>
+  </div>
+  <div id="chrome" hidden>
+    <div id="ball"><div id="ring"></div><span id="count"></span><svg id="chevron" viewBox="0 0 36 36" hidden><path d="M12 15 L18 21 L24 15" fill="none" stroke="#525252" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    <div id="list" hidden></div>
+  </div>
+  <script type="module" src="pet.js"></script>
+</body>
+</html>

@@ -48,7 +48,7 @@ const ctx = {
 
 apply(ctx, { pet: 'deepseek-whale', size: 180 })
 
-assert.equal(routes.size, 9, 'the plugin registers nine Fetch routes')
+assert.equal(routes.size, 10, 'the plugin registers ten Fetch routes')
 for (const path of [
   '/api/dsh-codex-pets/pets',
   '/api/dsh-codex-pets/sprite',
@@ -59,9 +59,17 @@ for (const path of [
   '/api/dsh-codex-pets/codex-pets',
   '/api/dsh-codex-pets/import-codex',
   '/api/dsh-codex-pets/focus',
+  '/api/dsh-codex-pets/runtime',
 ]) {
   assert.ok(routes.has(path), `route ${path} is registered`)
 }
+
+// ---- the Electron runtime ---------------------------------------------------
+
+// Outside DSH Desktop there is no runtime to fetch, and the page is told so.
+const runtimeAnswer = await routes.get('/api/dsh-codex-pets/runtime').fetch(new Request('http://x/api/dsh-codex-pets/runtime'))
+assert.equal(runtimeAnswer.status, 200, 'the runtime route answers 200')
+assert.equal((await runtimeAnswer.json()).status, 'unsupported', 'and says unsupported outside DSH Desktop')
 
 // ---- the gallery ---------------------------------------------------------
 

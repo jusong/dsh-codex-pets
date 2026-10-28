@@ -1,4 +1,4 @@
-# Host-only bundle: lib/index.js spawns the native macOS pet helper.
+# Host-only bundle: lib/index.js spawns the Electron pet window.
 - insert:
     - id: dsh-codex-pets
       name: dsh-codex-pets

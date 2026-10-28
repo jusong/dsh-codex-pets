@@ -1,0 +1,108 @@
+:root { --edge: 220px; }
+html, body {
+  width: 100%; height: 100%; margin: 0; overflow: hidden;
+  background: transparent;
+  -webkit-user-select: none; user-select: none;
+  cursor: default;
+  font: 14px -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+}
+
+/* Centred without the strip, pinned to the top with it. Plain flex rather
+   than a transform, so the drag region is exactly the pet's box. */
+#stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+body[data-strip="1"] #stage { align-items: flex-start; }
+
+/* The pet is the drag region: macOS moves the window by itself. */
+#pet {
+  position: relative; flex: none;
+  width: var(--edge); height: var(--edge);
+  -webkit-app-region: drag;
+}
+
+#sprite {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: contain; image-rendering: pixelated;
+  filter: drop-shadow(0 8px 5px rgba(8, 22, 44, .22));
+}
+
+/* Just under the feet, which land around 70% down the cell. */
+#shadow {
+  position: absolute; left: 50%; bottom: 23%;
+  width: 52%; height: 6%;
+  transform: translate(-50%, 50%) scale(var(--shadow-scale, 1));
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(11, 31, 58, .2) 0, rgba(11, 31, 58, .2) 70%, rgba(11, 31, 58, 0) 100%);
+  opacity: var(--shadow-opacity, 1);
+  pointer-events: none;
+}
+body[data-motion="1"] #shadow { transition: transform .18s ease, opacity .18s ease; }
+
+#splash { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+#splash .bit { position: absolute; opacity: 0; pointer-events: none; }
+
+/* The strip under the pet: the count ball and the list it opens. */
+#chrome { position: absolute; left: 0; right: 0; bottom: 0; -webkit-app-region: no-drag; pointer-events: none; }
+#chrome[hidden], #list[hidden], #chevron[hidden] { display: none; }
+#ball {
+  position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
+  box-sizing: border-box; height: 36px; min-width: 36px; padding: 0 16px;
+  border-radius: 18px; background: #fff;
+  box-shadow: 0 1px 8px rgba(0, 0, 0, .16);
+  display: flex; align-items: center; justify-content: center;
+  color: #525252; font-weight: 600; font-variant-numeric: tabular-nums;
+  pointer-events: auto; -webkit-app-region: no-drag;
+}
+#ball.circle { padding: 0; width: 36px; }
+#count { font-size: 15px; line-height: 18px; position: relative; }
+#count.ratio { font-size: 13px; }
+#chevron { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+/* A soft halo, and a light that travels the ball's edge, while a session works. */
+#ring { display: none; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; }
+#ball.busy { box-shadow: 0 0 10px rgba(59, 122, 255, .45), 0 1px 8px rgba(0, 0, 0, .1); }
+#ball.busy #ring { display: block; }
+#ring::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  box-shadow: 0 0 0 2px rgba(59, 122, 255, .35);
+}
+#ring::after {
+  content: ""; position: absolute; inset: 2.75px; border-radius: inherit;
+  padding: 2.25px; box-sizing: border-box;
+  background: conic-gradient(from 0deg, rgba(59, 122, 255, 0), rgba(59, 122, 255, .08) 20%, rgba(59, 122, 255, .55) 72%, #3b7aff);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+}
+body[data-motion="1"] #ball.busy { animation: breathe 1.4s ease-in-out infinite alternate; }
+body[data-motion="1"] #ball.busy #ring::after { animation: orbit 1.8s linear infinite; }
+@keyframes breathe { from { box-shadow: 0 0 6px rgba(59, 122, 255, .2), 0 1px 8px rgba(0, 0, 0, .1); } to { box-shadow: 0 0 12px rgba(59, 122, 255, .6), 0 1px 8px rgba(0, 0, 0, .1); } }
+@keyframes orbit { to { transform: rotate(360deg); } }
+
+#list {
+  position: absolute; top: 50px; left: 50%; transform: translateX(-50%);
+  width: min(300px, calc(100vw - 16px)); box-sizing: border-box;
+  background: #fff; border-radius: 18px;
+  box-shadow: 0 2px 16px rgba(0, 0, 0, .14);
+  pointer-events: auto; -webkit-app-region: no-drag;
+}
+#list.single { border-radius: 24px; }
+.row {
+  position: relative; box-sizing: border-box; height: 48px; margin: 0 4px;
+  padding: 0 12px 0 36px; border-radius: 10px;
+  display: flex; flex-direction: column; justify-content: center; gap: 2px;
+}
+.row:first-child { margin-top: 2px; }
+.row:last-child { margin-bottom: 2px; }
+.row:hover { background: #ededed; cursor: pointer; }
+.row .title { font-size: 14px; font-weight: 600; color: #1a1a1a; line-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .state { font-size: 12px; color: #808080; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .dot { position: absolute; left: 13px; top: 20px; width: 8px; height: 8px; border-radius: 50%; background: #34c759; }
+.row .spin {
+  position: absolute; left: 10px; top: 17px; width: 14px; height: 14px; box-sizing: border-box;
+  border-radius: 50%; border: 1.75px solid #dbdbdb;
+}
+.row .spin::after {
+  content: ""; position: absolute; inset: -1.75px; border-radius: 50%; box-sizing: border-box;
+  border: 1.75px solid transparent; border-top-color: #3b7aff; border-left-color: #3b7aff;
+  filter: drop-shadow(0 0 2px rgba(59, 122, 255, .85));
+}
+body[data-motion="1"] .row .spin::after { animation: orbit 1.15s linear infinite; }

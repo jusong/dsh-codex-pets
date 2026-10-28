@@ -4,8 +4,8 @@ import WebKit
 /**
  * Render a sprite pet to a PNG, headlessly.
  *
- * This mirrors what native/main.swift does when the real helper starts:
- * the same manifest injection, the same user scripts, the same player page.
+ * This snapshots the preview scripts in `runtime/`. The pet on the desktop
+ * is the Electron window in `electron/`, not this tool.
  * The only difference is that the WebView is rendered off the user's
  * desktop and snapshotted, so the result does not depend on what else is
  * on screen.

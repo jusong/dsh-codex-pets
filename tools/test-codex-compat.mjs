@@ -4,8 +4,8 @@
  *
  * Hermetic: the plugin is copied into a temp project and fed temp pets, the
  * registry is a local HTTP server, and the atlases are header-only stand-ins
- * (nothing here decodes pixels; the native side is covered by
- * `dsh-codex-pets-macos --describe`).
+ * (nothing here decodes pixels; the window's pet loader is covered by
+ * `tools/test-electron-core.mjs`).
  *
  *   node tools/test-codex-compat.mjs
  */
@@ -114,7 +114,8 @@ console.log('host: gallery and routes with plain Codex pets')
 
 const project = mkdtempSync(join(tmpdir(), 'dsh-codex-pets-compat-'))
 mkdirSync(join(project, 'lib'))
-for (const file of ['index.js', 'codex-pet.js', 'pet-store.js', 'session-ball.js', 'helper-actions.js']) copyFileSync(join(ROOT, 'lib', file), join(project, 'lib', file))
+for (const file of ['index.js', 'codex-pet.js', 'pet-store.js', 'session-ball.js', 'helper-actions.js', 'electron-runtime.js']) copyFileSync(join(ROOT, 'lib', file), join(project, 'lib', file))
+symlinkSync(join(ROOT, 'electron'), join(project, 'electron'))
 symlinkSync(join(ROOT, 'node_modules'), join(project, 'node_modules'))
 const pets = join(project, 'pets')
 const userPets = join(project, 'user-pets')

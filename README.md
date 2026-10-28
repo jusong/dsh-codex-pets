@@ -26,9 +26,9 @@ DSH Desktop 的 macOS 桌面宠物：一只 DeepSeek 小鲸鱼浮在所有窗口
 dsh plugin --profile desktop add github:jusong/dsh-codex-pets
 ```
 
-要固定版本就带上 tag，例如 `github:jusong/dsh-codex-pets#v0.11.1`。
+要固定版本就带上 tag，例如 `github:jusong/dsh-codex-pets#v0.12.0`。
 
-装完重启 DSH，鲸鱼会出现在屏幕右下、输入框上方。
+装完重启 DSH。第一次会下载 Electron（约 120 MB）到 `~/.dsh/dsh-codex-pets-runtime/`，校验通过后鲸鱼出现在屏幕右下、输入框上方。之后直接用已下载的那一份。
 
 如果没出现，在 `~/.dsh/profiles/desktop/cordis.patch.yml` 里手动加上这段，让 loader 加载它：
 
@@ -73,26 +73,13 @@ dsh plugin --profile desktop add github:jusong/dsh-codex-pets
 - 想用现成的：在设置页安装，或者 `node tools/install-pet.mjs <id | 链接 | zip | 目录>`；
 - 想做自己的：把图集和 manifest 放进 `~/.dsh/dsh-codex-pets/<id>/`；手上已有 Codex 宠物的话，`python3 tools/port_custom_pet.py` 能直接转过来。
 
-## 原生助手与 `bin/`
+## 桌面窗口
 
-悬浮窗不可能用纯 JS 做：透明、置顶、跨 Space、原生拖动都在 `native/main.swift` 编出的 AppKit `NSPanel` 里，`lib/index.js` 只负责把它 `spawn` 起来。所以 `bin/dsh-codex-pets-macos` 是**编译产物，也是随包发布的运行文件**，必须提交进仓库：
+宠物画在 `electron/` 里的一个小窗口中，源码是普通 JavaScript，随插件一起发，仓库里没有需要编译的二进制。Electron 本体不打包：第一次显示宠物时，插件把它下载到 `~/.dsh/dsh-codex-pets-runtime/electron`，用固定的 SHA-256 校验后再解压。
 
-- 安装过程不编译任何东西——`package.json` 没有 `scripts`，`dsh plugin add` 只是拉包、装依赖；
-- 换成安装时现场编译也不合适：pnpm 11 默认拦依赖的构建脚本（要用户手动批准），还要求装 Xcode Command Line Tools；
-- 少了它，用户看到的就是「插件装好了但桌面上没有宠物」，宿主只会在日志里留一句 `native helper missing`。
+内置两个地址（GitHub Releases 和 npmmirror），先试答得快的那个，失败再换下一个。都失败时，到设置 → 宠物里点重试，或者填一个自己的下载地址。不想走网络的话，把对应的 zip（文件名写在设置页上）放进 `~/.dsh/dsh-codex-pets-runtime/electron/drop/` 再点重试。
 
-它同时包含 **arm64 和 x86_64**（`lipo -info` 能看到两片），macOS 13+ 都能跑；ad-hoc 签名，适合本机使用。仓库里把它当产物看，真正的源只有 `native/main.swift`，要重建就：
-
-```sh
-swiftc -O -swift-version 5 -target arm64-apple-macosx13.0 \
-  -framework AppKit -framework Carbon -framework QuartzCore \
-  native/shortcut.swift native/ask-layout.swift native/main.swift -o /tmp/dsh-codex-pets-arm64
-swiftc -O -swift-version 5 -target x86_64-apple-macosx13.0 \
-  -framework AppKit -framework Carbon -framework QuartzCore \
-  native/shortcut.swift native/ask-layout.swift native/main.swift -o /tmp/dsh-codex-pets-x86_64
-lipo -create /tmp/dsh-codex-pets-arm64 /tmp/dsh-codex-pets-x86_64 -output bin/dsh-codex-pets-macos
-codesign --force --sign - bin/dsh-codex-pets-macos
-```
+拖动交给系统窗口服务（页面上的原生拖动区域），脚本不逐帧挪窗口。目前只做了 macOS；和系统相关的部分在 `electron/platform/`，以后加 Windows 是新加一个适配器，再在 `lib/electron-runtime.js` 里加一行下载目标。
 
 ## 开发
 
@@ -102,10 +89,11 @@ node tools/test-sprite-pet.mjs      # 播放引擎
 node tools/test-codex-compat.mjs    # Codex 宠物兼容
 node tools/test-pet-management.mjs  # 装 / 删 / 排序 / 导入
 node tools/test-session-ball.mjs    # 最近会话球
+node tools/test-electron-core.mjs   # 窗口里的纯逻辑
+node tools/test-electron-runtime.mjs # Electron 下载与校验
+node tools/test-host-window.mjs     # 宿主拉起真实窗口（本机已下载 Electron 时）
 python3 tools/check_pets.py         # 图集契约
 ```
-
-不开窗口检查一只宠物画得对不对：`bin/dsh-codex-pets-macos --describe --pet-dir pets/deepseek-whale`。
 
 ## 许可
 

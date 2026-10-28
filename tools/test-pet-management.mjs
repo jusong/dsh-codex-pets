@@ -75,9 +75,10 @@ mkdirSync(join(project, 'lib'), { recursive: true })
 mkdirSync(pets)
 mkdirSync(userPets)
 mkdirSync(codexPets, { recursive: true })
-for (const file of ['index.js', 'codex-pet.js', 'pet-store.js', 'session-ball.js', 'helper-actions.js']) {
+for (const file of ['index.js', 'codex-pet.js', 'pet-store.js', 'session-ball.js', 'helper-actions.js', 'electron-runtime.js']) {
   copyFileSync(join(ROOT, 'lib', file), join(project, 'lib', file))
 }
+symlinkSync(join(ROOT, 'electron'), join(project, 'electron'))
 symlinkSync(join(ROOT, 'node_modules'), join(project, 'node_modules'))
 
 function putPet(dir, id, name, sheet, extra = {}) {
