@@ -26,7 +26,7 @@ DSH Desktop 的 macOS 桌面宠物：一只 DeepSeek 小鲸鱼浮在所有窗口
 dsh plugin --profile desktop add github:jusong/dsh-codex-pets
 ```
 
-要固定版本就带上 tag，例如 `github:jusong/dsh-codex-pets#v0.10.0`。
+要固定版本就带上 tag，例如 `github:jusong/dsh-codex-pets#v0.11.0`。
 
 装完重启 DSH，鲸鱼会出现在屏幕右下、输入框上方。
 
@@ -61,6 +61,7 @@ dsh plugin --profile desktop add github:jusong/dsh-codex-pets
     sessions: true        # 脚下的最近会话球
     sessionLimit: 5       # 球里列几条（1–10）
     sessionMotion: true   # 有会话在忙时宠物不闲着，忙完跳一下
+    shortcut: Command+Option+N  # 打开新会话输入框；留空关闭
 ```
 
 用户装的宠物放在 `~/.dsh/dsh-codex-pets/`，顺序记在同目录的 `pets.json`。旧版用的是 `~/.dsh/pets`，升级后首次启动会自动搬过去。
@@ -84,9 +85,11 @@ dsh plugin --profile desktop add github:jusong/dsh-codex-pets
 
 ```sh
 swiftc -O -swift-version 5 -target arm64-apple-macosx13.0 \
-  -framework AppKit -framework QuartzCore native/main.swift -o /tmp/dsh-codex-pets-arm64
+  -framework AppKit -framework Carbon -framework QuartzCore \
+  native/shortcut.swift native/ask-layout.swift native/main.swift -o /tmp/dsh-codex-pets-arm64
 swiftc -O -swift-version 5 -target x86_64-apple-macosx13.0 \
-  -framework AppKit -framework QuartzCore native/main.swift -o /tmp/dsh-codex-pets-x86_64
+  -framework AppKit -framework Carbon -framework QuartzCore \
+  native/shortcut.swift native/ask-layout.swift native/main.swift -o /tmp/dsh-codex-pets-x86_64
 lipo -create /tmp/dsh-codex-pets-arm64 /tmp/dsh-codex-pets-x86_64 -output bin/dsh-codex-pets-macos
 codesign --force --sign - bin/dsh-codex-pets-macos
 ```

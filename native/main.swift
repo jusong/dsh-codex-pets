@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Darwin
 import ImageIO
 import QuartzCore
@@ -735,6 +736,14 @@ final class SpritePlayer {
     }
 }
 
+/// The name the pet shows for a workspace. The host stores `default-workspace`;
+/// the Mac's language decides whether that reads as 默认工作区.
+func petWorkspaceLabel(_ title: String) -> String {
+    guard title == "default-workspace" else { return title }
+    let chinese = Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
+    return chinese ? "默认工作区" : "Default workspace"
+}
+
 /**
  * The count under the pet, and the session list it opens.
  *
@@ -750,6 +759,7 @@ final class SessionChrome: NSView {
         let id: String
         let title: String
         let status: String
+        let workspace: String
     }
 
     var onToggle: (() -> Void)?
@@ -863,7 +873,7 @@ final class SessionChrome: NSView {
         if let hoveredIndex, hoveredIndex >= items.count { self.hoveredIndex = nil }
         let bounds = self.bounds
         let signature = "\(Int(bounds.width))x\(Int(bounds.height))|\(expanded)|\(Int(scale * 10))|"
-            + items.map { "\($0.id)\u{1}\($0.status)\u{1}\($0.title)" }.joined(separator: "\u{2}")
+            + items.map { "\($0.id)\u{1}\($0.status)\u{1}\($0.title)\u{1}\($0.workspace)" }.joined(separator: "\u{2}")
         if signature == renderedSignature { return }
         renderedSignature = signature
         let chinese = Locale.preferredLanguages.first?.hasPrefix("zh") == true
@@ -952,7 +962,9 @@ final class SessionChrome: NSView {
                 status.fontSize = 12
                 status.foregroundColor = NSColor(white: 0.5, alpha: 1).cgColor
                 status.truncationMode = .end
-                status.string = running ? (chinese ? "正在思考" : "Thinking") : (chinese ? "已完成" : "Done")
+                let state = running ? (chinese ? "正在思考" : "Thinking") : (chinese ? "已完成" : "Done")
+                let place = petWorkspaceLabel(item.workspace)
+                status.string = place.isEmpty ? state : "\(state) · \(place)"
                 row.addSublayer(title)
                 row.addSublayer(status)
                 listLayer.addSublayer(row)
@@ -1164,6 +1176,52 @@ final class SessionChrome: NSView {
     }
 }
 
+/// Borderless, but it still takes the keyboard while the question is open.
+final class AskPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+/// The question field. Escape closes the dialog without starting a session.
+final class AskField: NSTextField {
+    var onCancel: (() -> Void)?
+
+    override func cancelOperation(_ sender: Any?) {
+        onCancel?()
+    }
+}
+
+/// Resigning the question card closes it, except while its workspace menu is open.
+final class AskWindowDelegate: NSObject, NSWindowDelegate {
+    var onResign: (() -> Void)?
+
+    func windowDidResignKey(_ notification: Notification) {
+        onResign?()
+    }
+}
+
+/// A blue circle with an up arrow. Faded while the question is empty.
+final class SendButton: NSButton {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        isBordered = false
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.systemBlue.cgColor
+        layer?.cornerRadius = frame.height / 2
+        image = NSImage(systemSymbolName: "arrow.up", accessibilityDescription: "提交")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .bold))
+        imagePosition = .imageOnly
+        contentTintColor = .white
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func layout() {
+        super.layout()
+        layer?.cornerRadius = bounds.height / 2
+    }
+}
+
 /// The pet's content view: it takes the clicks and hands them to the
 /// controller.
 final class PetView: NSView {
@@ -1177,7 +1235,7 @@ final class PetView: NSView {
     override func rightMouseDown(with event: NSEvent) { controller?.showMenu(with: event) }
 }
 
-final class PetController: NSObject, NSApplicationDelegate {
+final class PetController: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     private var panel: NSPanel!
     private var player: SpritePlayer!
     private var chrome: SessionChrome!
@@ -1193,6 +1251,9 @@ final class PetController: NSObject, NSApplicationDelegate {
     private var levelName = "floating"
     private var performNow = false
     private var dragBench = false
+    private var shortcutValue = "Command+Option+N"
+    private var hotKey: EventHotKeyRef?
+    private var hotKeyHandler: EventHandlerRef?
 
     private var drag = DragState()
     /// The benchmark drives the drag with a cursor it controls.
@@ -1248,6 +1309,7 @@ final class PetController: NSObject, NSApplicationDelegate {
         }
         self.player = player
         createPanel()
+        setShortcut(shortcutValue)
         startClocks()
         watchParent()
         watchCommands()
@@ -1288,6 +1350,7 @@ final class PetController: NSObject, NSApplicationDelegate {
             case "--size": size = CGFloat(Double(iterator.next() ?? "") ?? 220)
             case "--parent-pid": parentPid = pid_t(Int32(iterator.next() ?? "") ?? 0)
             case "--level": levelName = iterator.next() ?? "floating"
+            case "--shortcut": shortcutValue = iterator.next() ?? ""
             case "--perform-now": performNow = true
             case "--drag-bench": dragBench = true
             case "--describe": describe = true
@@ -1357,7 +1420,6 @@ final class PetController: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.sessionsExpanded = false
             if self.glideTimer == nil { self.relayoutSettled() }
-            self.activateDSH()
             FileHandle.standardOutput.write(Data("open \(id)\n".utf8))
         }
         view.addSubview(chrome)
@@ -1543,18 +1605,22 @@ final class PetController: NSObject, NSApplicationDelegate {
             saveOrigin()
             player.endDrag()
         } else {
-            activateDSH()
+            FileHandle.standardOutput.write(Data("activate\n".utf8))
             player.react()
         }
         writeDragLog(byServer: byServer)
     }
 
-    /// The pet has no title bar, so its right-click menu is the way to its
-    /// settings and off the screen.
+    /// The pet has no title bar, so its right-click menu is the way to a new
+    /// session, its settings, and off the screen.
     func showMenu(with event: NSEvent) {
         guard let view = panel.contentView else { return }
         let chinese = Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
         let menu = NSMenu()
+        let ask = NSMenuItem(title: chinese ? "新会话" : "New Session", action: nil, keyEquivalent: "")
+        ask.image = NSImage(systemSymbolName: "plus.bubble", accessibilityDescription: nil)
+        ask.submenu = workspaceMenu(chinese: chinese)
+        menu.addItem(ask)
         let settings = NSMenuItem(
             title: chinese ? "设置" : "Settings",
             action: #selector(openSettingsPage),
@@ -1574,7 +1640,260 @@ final class PetController: NSObject, NSApplicationDelegate {
         NSMenu.popUpContextMenu(menu, with: event, for: view)
     }
 
+    /// Hovering「新会话」opens this. One row per workspace the host last sent.
+    private func workspaceMenu(chinese: Bool) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        if workspaceItems.isEmpty {
+            let empty = NSMenuItem(title: chinese ? "没有工作区" : "No workspaces", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+            return menu
+        }
+        for item in workspaceItems {
+            let row = NSMenuItem(
+                title: workspaceLabel(item.title.isEmpty ? item.id : item.title),
+                action: #selector(askInWorkspace(_:)),
+                keyEquivalent: ""
+            )
+            row.target = self
+            row.representedObject = item.id
+            menu.addItem(row)
+        }
+        return menu
+    }
+
+    /// DSH stores the first workspace as the directory name `default-workspace`
+    /// and shows that one row as the localized default.
+    private func workspaceLabel(_ title: String) -> String {
+        petWorkspaceLabel(title)
+    }
+
+    private func workspaceChoices() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for item in workspaceItems {
+            let title = workspaceLabel(item.title.isEmpty ? item.id : item.title)
+            let row = NSMenuItem(title: title, action: #selector(pickWorkspace(_:)), keyEquivalent: "")
+            row.target = self
+            row.representedObject = item.id
+            row.state = item.id == askWorkspaceId ? .on : .off
+            menu.addItem(row)
+        }
+        return menu
+    }
+
+    @objc private func askInWorkspace(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String, !id.isEmpty else { return }
+        showAskDialog(workspaceId: id, title: sender.title)
+    }
+
+    fileprivate func openDefaultAskDialog() {
+        guard let item = workspaceItems.first(where: { $0.title == "default-workspace" })
+                ?? workspaceItems.first else { return }
+        showAskDialog(
+            workspaceId: item.id,
+            title: workspaceLabel(item.title.isEmpty ? item.id : item.title)
+        )
+    }
+
+    private func setShortcut(_ value: String) {
+        if let hotKey {
+            UnregisterEventHotKey(hotKey)
+            self.hotKey = nil
+        }
+        guard let shortcut = parseGlobalShortcut(value) else { return }
+        if hotKeyHandler == nil {
+            var event = EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyPressed)
+            )
+            InstallEventHandler(
+                GetApplicationEventTarget(),
+                petShortcutHandler,
+                1,
+                &event,
+                nil as UnsafeMutableRawPointer?,
+                &hotKeyHandler
+            )
+        }
+        var modifiers: UInt32 = 0
+        if shortcut.command { modifiers |= UInt32(cmdKey) }
+        if shortcut.option { modifiers |= UInt32(optionKey) }
+        if shortcut.control { modifiers |= UInt32(controlKey) }
+        if shortcut.shift { modifiers |= UInt32(shiftKey) }
+        let identifier = EventHotKeyID(signature: 0x44534850, id: 1) // DSHP
+        RegisterEventHotKey(
+            shortcut.keyCode,
+            modifiers,
+            identifier,
+            GetApplicationEventTarget(),
+            0,
+            &hotKey
+        )
+    }
+
+    /// A borderless question card. Return or the blue arrow submits; clicking
+    /// the workspace name switches it without leaving the card.
+    private func showAskDialog(workspaceId: String, title: String) {
+        askWorkspaceId = workspaceId
+        let window = ensureAskPanel()
+        setChipTitle(title)
+        askField?.stringValue = ""
+        updateSendButton()
+        let visible = (panel.screen ?? NSScreen.main)?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 10_000, height: 10_000)
+        let origin = askDialogOrigin(pet: petFrameOnScreen(), dialog: window.frame.size, visible: visible)
+        window.setFrameOrigin(origin)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        if let field = askField { window.makeFirstResponder(field) }
+    }
+
+    private func ensureAskPanel() -> AskPanel {
+        if let askPanel { return askPanel }
+        let chinese = Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
+        let window = AskPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 72),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.level = panel.level
+        window.isFloatingPanel = true
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        window.hidesOnDeactivate = false
+        window.isReleasedWhenClosed = false
+        window.becomesKeyOnlyIfNeeded = false
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        askWindowDelegate.onResign = { [weak self] in
+            guard let self, !self.workspaceMenuOpen else { return }
+            self.cancelAsk()
+        }
+        window.delegate = askWindowDelegate
+        guard let content = window.contentView else { return window }
+        content.wantsLayer = true
+        content.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        content.layer?.cornerRadius = 16
+        content.layer?.masksToBounds = true
+        content.layer?.borderWidth = 1
+        content.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.55).cgColor
+
+        let field = AskField(frame: NSRect(x: 16, y: 34, width: 292, height: 24))
+        field.placeholderString = chinese ? "输入问题" : "Ask something"
+        field.font = .systemFont(ofSize: 14)
+        field.isBordered = false
+        field.isBezeled = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.cell?.isScrollable = true
+        field.cell?.wraps = false
+        field.target = self
+        field.delegate = self
+        field.action = #selector(submitAsk)
+        field.onCancel = { [weak self] in self?.cancelAsk() }
+
+        let chip = NSButton(frame: NSRect(x: 14, y: 10, width: 80, height: 20))
+        chip.isBordered = false
+        chip.imagePosition = .imageTrailing
+        chip.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
+        chip.imageScaling = .scaleNone
+        chip.target = self
+        chip.action = #selector(switchWorkspace(_:))
+        chip.lineBreakMode = .byTruncatingTail
+        chip.alignment = .left
+        chip.contentTintColor = .secondaryLabelColor
+
+        let send = SendButton(frame: NSRect(x: 316, y: 22, width: 28, height: 28))
+        send.target = self
+        send.action = #selector(submitAsk)
+
+        content.addSubview(field)
+        content.addSubview(chip)
+        content.addSubview(send)
+        askField = field
+        askChip = chip
+        askSend = send
+        askPanel = window
+        return window
+    }
+
+    private func setChipTitle(_ title: String) {
+        let text = NSAttributedString(string: title, attributes: [
+            .font: NSFont.systemFont(ofSize: 13),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ])
+        askChip?.attributedTitle = text
+        askChip?.sizeToFit()
+        guard let chip = askChip else { return }
+        var frame = chip.frame
+        frame.size.width = min(max(frame.width, 24), 280)
+        frame.size.height = 20
+        frame.origin = NSPoint(x: 14, y: 10)
+        chip.frame = frame
+    }
+
+    private func updateSendButton() {
+        let text = askField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        askSend?.alphaValue = text.isEmpty ? 0.35 : 1
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+        guard (obj.object as? NSTextField) === askField else { return }
+        updateSendButton()
+    }
+
+    @objc private func switchWorkspace(_ sender: NSButton) {
+        guard !workspaceItems.isEmpty else { return }
+        pickedWorkspace = false
+        workspaceMenuOpen = true
+        let menu = workspaceChoices()
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 6), in: sender)
+        let stay = pickedWorkspace || askPanel?.frame.contains(NSEvent.mouseLocation) == true
+        if stay {
+            askPanel?.makeKey()
+            if let field = askField { askPanel?.makeFirstResponder(field) }
+        }
+        workspaceMenuOpen = false
+        if !stay { cancelAsk() }
+    }
+
+    @objc private func pickWorkspace(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String, !id.isEmpty else { return }
+        pickedWorkspace = true
+        askWorkspaceId = id
+        setChipTitle(sender.title)
+    }
+
+    @objc private func submitAsk() {
+        guard let id = askWorkspaceId,
+              let text = askField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else { return }
+        let object = ["workspaceId": id, "text": text]
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object) else { return }
+        cancelAsk()
+        var line = Data("ask ".utf8)
+        line.append(data)
+        line.append(0x0A)
+        FileHandle.standardOutput.write(line)
+    }
+
+    @objc private func cancelAsk() {
+        guard !closingAsk, askPanel?.isVisible == true else { return }
+        closingAsk = true
+        askWorkspaceId = nil
+        askField?.stringValue = ""
+        askPanel?.orderOut(nil)
+        closingAsk = false
+    }
+
     /// Bring DSH forward and let the page open Settings at this plugin's page.
+    /// The settings line is not waiting on activation: that completion does not
+    /// always run when DSH is already open, and then the page never hears it.
     @objc private func openSettingsPage() {
         activateDSH()
         FileHandle.standardOutput.write(Data("settings\n".utf8))
@@ -1665,17 +1984,23 @@ final class PetController: NSObject, NSApplicationDelegate {
 
     // -- host --------------------------------------------------------------
 
-    private func activateDSH() {
-        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.deepseek.dsh").first {
-            app.unhide()
-            app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+    private func activateDSH(done: (() -> Void)? = nil) {
+        let finish = {
+            if let done { DispatchQueue.main.async(execute: done) }
+        }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.addsToRecentItems = false
+        let url = URL(fileURLWithPath: "/Applications/DeepSeek Harness.app")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            finish()
             return
         }
-        NSWorkspace.shared.openApplication(
-            at: URL(fileURLWithPath: "/Applications/DeepSeek Harness.app"),
-            configuration: NSWorkspace.OpenConfiguration(),
-            completionHandler: nil
-        )
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { app, _ in
+            app?.unhide()
+            app?.activate(options: [.activateAllWindows])
+            finish()
+        }
     }
 
     /**
@@ -1721,6 +2046,18 @@ final class PetController: NSObject, NSApplicationDelegate {
     private var shownEdge: CGFloat = 0
     /// What the ball is listing. Empty means the ball is not drawn.
     private var sessionItems: [SessionChrome.Item] = []
+    /// Workspaces the new-session menu can start in, in the host's order.
+    private var workspaceItems: [(id: String, title: String)] = []
+    private var askPanel: AskPanel?
+    private var askField: AskField?
+    private var askChip: NSButton?
+    private var askSend: SendButton?
+    private var askWorkspaceId: String?
+    /// The workspace menu is a separate window, so opening it resigns the dialog.
+    private var workspaceMenuOpen = false
+    private var pickedWorkspace = false
+    private var closingAsk = false
+    private let askWindowDelegate = AskWindowDelegate()
     private var sessionsExpanded = false
     /// The settings switch that draws the ball under the pet.
     private var sessionChromeOn = false
@@ -1845,9 +2182,17 @@ final class PetController: NSObject, NSApplicationDelegate {
 
     /// The pet's centre in screen points, from where it is drawn right now.
     private func petCenterOnScreen() -> NSPoint {
+        let slot = petFrameOnScreen()
+        return NSPoint(x: slot.midX, y: slot.midY)
+    }
+
+    /// The drawn pet, not the window. The session ball hangs below and must
+    /// not push the question card away from the sprite.
+    private func petFrameOnScreen() -> NSRect {
         let frame = panel.frame
-        let slot = petSlot(in: NSRect(origin: .zero, size: frame.size), edge: shownEdge > 0 ? shownEdge : size)
-        return NSPoint(x: frame.minX + slot.midX, y: frame.minY + slot.midY)
+        let edge = shownEdge > 0 ? shownEdge : size
+        let slot = petSlot(in: NSRect(origin: .zero, size: frame.size), edge: edge)
+        return NSRect(x: frame.minX + slot.minX, y: frame.minY + slot.minY, width: slot.width, height: slot.height)
     }
 
     /**
@@ -1888,8 +2233,21 @@ final class PetController: NSObject, NSApplicationDelegate {
     }
 
     /// One line from the host: `size N`, `motion on|off`, `chrome on|off`,
-    /// or `sessions` plus a JSON array.
+    /// `sessions` plus a JSON array, or `workspaces` plus a JSON array.
     private func handleCommand(_ line: String) {
+        if line == "activate" {
+            activateDSH()
+            return
+        }
+        if line.hasPrefix("shortcut ") {
+            let raw = String(line.dropFirst("shortcut ".count))
+            if let data = raw.data(using: .utf8),
+               let value = try? JSONSerialization.jsonObject(with: data) as? String {
+                shortcutValue = value
+                setShortcut(value)
+            }
+            return
+        }
         if line.hasPrefix("size ") {
             if let value = Double(line.dropFirst(5).trimmingCharacters(in: .whitespaces)) {
                 resize(to: CGFloat(value))
@@ -1915,6 +2273,20 @@ final class PetController: NSObject, NSApplicationDelegate {
             if glideTimer == nil { relayoutSettled() }
             return
         }
+        if line.hasPrefix("workspaces ") {
+            let raw = String(line.dropFirst("workspaces ".count))
+            guard let data = raw.data(using: .utf8),
+                  let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
+            var next: [(id: String, title: String)] = []
+            for row in rows {
+                guard let id = row["id"] as? String, !id.isEmpty, id.count <= 200,
+                      !id.contains("\n"), !id.contains(" ") else { continue }
+                let title = ((row["title"] as? String) ?? "").replacingOccurrences(of: "\n", with: " ")
+                next.append((id: id, title: title))
+            }
+            workspaceItems = next
+            return
+        }
         guard line.hasPrefix("sessions ") else { return }
         let raw = String(line.dropFirst("sessions ".count))
         guard let data = raw.data(using: .utf8),
@@ -1926,7 +2298,8 @@ final class PetController: NSObject, NSApplicationDelegate {
             next.append(SessionChrome.Item(
                 id: id,
                 title: (row["title"] as? String) ?? "",
-                status: (row["status"] as? String) ?? "idle"
+                status: (row["status"] as? String) ?? "idle",
+                workspace: (row["workspace"] as? String) ?? ""
             ))
         }
         applySessionMotion(next)
@@ -2025,10 +2398,24 @@ final class PetController: NSObject, NSApplicationDelegate {
     }
 }
 
+private weak var shortcutController: PetController?
+
+private func petShortcutHandler(
+    _ nextHandler: EventHandlerCallRef?,
+    _ event: EventRef?,
+    _ userData: UnsafeMutableRawPointer?
+) -> OSStatus {
+    DispatchQueue.main.async {
+        shortcutController?.openDefaultAskDialog()
+    }
+    return noErr
+}
+
 signal(SIGTERM) { _ in exit(0) }
 signal(SIGINT) { _ in exit(0) }
 
 let application = NSApplication.shared
 let controller = PetController()
+shortcutController = controller
 application.delegate = controller
 application.run()

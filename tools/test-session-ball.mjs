@@ -5,7 +5,9 @@
  *   node tools/test-session-ball.mjs
  */
 import assert from 'node:assert/strict'
-import { clampSessionLimit, createFocusBus, rankSessions, sessionMetadata, sessionsLine, shapeCachedRecord, shapeCachedText, titleOf } from '../lib/session-ball.js'
+import { helperAction } from '../lib/helper-actions.js'
+import { formatShortcut, shortcutFromKeyboard } from '../lib/shortcut.js'
+import { clampSessionLimit, createFocusBus, parseAskLine, rankSessions, sessionMetadata, sessionsLine, shapeCachedRecord, shapeCachedText, titleOf, withWorkspace, workspaceTitle, workspacesLine } from '../lib/session-ball.js'
 
 let checks = 0
 const eq = (actual, expected, message) => { assert.deepEqual(actual, expected, message); checks += 1 }
@@ -102,10 +104,48 @@ eq(titleOf({ status: 'rejected', reason: new Error('x') }), '', 'a failed fold')
 eq(titleOf({ status: 'fulfilled', value: { title: { title: 'a\nb\tc' } } }), 'a b c', 'newlines do not survive into the one-line protocol')
 
 eq(sessionsLine([{ id: 'abc', title: 'Say hello', status: 'running' }]),
-  'sessions [{"id":"abc","title":"Say hello","status":"running"}]\n',
+  'sessions [{"id":"abc","title":"Say hello","status":"running","workspace":""}]\n',
   'one stdin line')
+eq(sessionsLine([{ id: 'abc', title: 'Say hello', status: 'idle', workspace: 'default-workspace' }]),
+  'sessions [{"id":"abc","title":"Say hello","status":"idle","workspace":"default-workspace"}]\n',
+  'a session line keeps the workspace it belongs to')
 eq(sessionsLine([]), 'sessions []\n', 'an empty list is still one line')
 eq(sessionsLine([{ id: 'bad id', title: 'x', status: 'running' }]), 'sessions []\n', 'an id the helper cannot quote is dropped')
+
+eq(workspacesLine([{ id: 'ws-1', title: 'default-workspace' }]),
+  'workspaces [{"id":"ws-1","title":"default-workspace"}]\n',
+  'the menu gets one workspace line')
+eq(workspacesLine([{ id: 'bad id', title: 'x' }]), 'workspaces []\n', 'a workspace id with a space is dropped')
+eq(parseAskLine('ask {"workspaceId":"ws-1","text":"  hello\\n"}'),
+  { workspaceId: 'ws-1', text: 'hello' },
+  'a submitted question is the trimmed text')
+eq(parseAskLine('ask {"workspaceId":"bad id","text":"hello"}'), null, 'a bad workspace id is not a question')
+eq(parseAskLine('ask {"workspaceId":"ws-1","text":"   "}'), null, 'a blank question is not sent')
+eq(parseAskLine('open ws-1'), null, 'another helper line is not a question')
+
+eq(helperAction('activate'), { type: 'activate' }, 'a pet click activates DSH')
+eq(helperAction('open session-1'), { type: 'open', id: 'session-1' }, 'a session row activates DSH and opens that session')
+eq(helperAction('ask {"workspaceId":"ws-1","text":"hello"}'),
+  { type: 'ask', workspaceId: 'ws-1', text: 'hello' },
+  'a submitted question stays a background ask')
+eq(helperAction('open bad id'), null, 'a malformed open command is ignored')
+eq(helperAction('settings'), { type: 'settings' }, 'settings is its own action, not a new session')
+eq(helperAction('ask {"workspaceId":"ws-1","text":"settings"}')?.type, 'ask', 'a question is never the settings page')
+
+eq(shortcutFromKeyboard({ code: 'KeyN', key: 'n', metaKey: true, altKey: true }), 'Command+Option+N', '⌘⌥N is recorded as a chord')
+eq(shortcutFromKeyboard({ code: 'KeyN', key: 'n', metaKey: true }), undefined, 'one modifier is not a chord')
+eq(shortcutFromKeyboard({ code: 'Backspace', key: 'Backspace' }), '', 'delete clears the shortcut')
+eq(formatShortcut('Command+Option+N'), '⌘⌥N', 'a stored chord is shown with symbols')
+eq(workspaceTitle([
+  { path: '/work/default-workspace', title: 'default-workspace' },
+  { path: '/work/default-workspace/dsh-pet', title: 'dsh-pet' },
+], '/work/default-workspace/dsh-pet'), 'dsh-pet', 'the deepest workspace owns the session')
+eq(withWorkspace(
+  [{ id: 'session-1', status: 'running', title: 'Hi' }],
+  [{ id: 'session-1', cwd: '/work/default-workspace' }],
+  [{ path: '/work/default-workspace', title: 'default-workspace' }],
+), [{ id: 'session-1', status: 'running', title: 'Hi', workspace: 'default-workspace' }],
+'a ranked row picks up its workspace')
 
 eq(shapeCachedRecord('session-1', {
   record: {
@@ -115,14 +155,16 @@ eq(shapeCachedRecord('session-1', {
       sessionListMetadata: { val: { blank: false, lastPromptAt: 80 } },
     },
   },
-}), { id: 'session-1', createdAt: 50, lastPromptAt: 80, blank: false, title: 'Say hello' },
+}), { id: 'session-1', createdAt: 50, lastPromptAt: 80, blank: false, title: 'Say hello', cwd: '' },
 'a projection file becomes one ranked record')
 eq(shapeCachedRecord('session-2', { record: { rows: { sessionListMetadata: { val: { blank: true } } } } })?.blank, true,
 'a blank projection stays blank')
 eq(shapeCachedRecord('bad id', { record: {} }), null, 'a bad id is not a record')
 eq(shapeCachedText('session-1', '{"record":{"identity":{"createdAt":50},"rows":{"title":{"val":"Say \\"hi\\""},"sessionListMetadata":{"val":{"blank":false,"lastPromptAt":80}}}}}'),
-  { id: 'session-1', createdAt: 50, lastPromptAt: 80, blank: false, title: 'Say "hi"' },
+  { id: 'session-1', createdAt: 50, lastPromptAt: 80, blank: false, title: 'Say "hi"', cwd: '' },
   'the same fields can be read without parsing the whole file')
+eq(shapeCachedText('session-1', '{"record":{"identity":{"cwd":"/work/default-workspace","createdAt":1},"rows":{}}}')?.cwd,
+  '/work/default-workspace', 'a cached session keeps the directory it runs in')
 
 const bus = createFocusBus()
 eq(bus.publish('not an id'), false, 'a bad id is ignored')

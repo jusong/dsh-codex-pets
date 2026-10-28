@@ -114,7 +114,7 @@ console.log('host: gallery and routes with plain Codex pets')
 
 const project = mkdtempSync(join(tmpdir(), 'dsh-codex-pets-compat-'))
 mkdirSync(join(project, 'lib'))
-for (const file of ['index.js', 'codex-pet.js', 'pet-store.js', 'session-ball.js']) copyFileSync(join(ROOT, 'lib', file), join(project, 'lib', file))
+for (const file of ['index.js', 'codex-pet.js', 'pet-store.js', 'session-ball.js', 'helper-actions.js']) copyFileSync(join(ROOT, 'lib', file), join(project, 'lib', file))
 symlinkSync(join(ROOT, 'node_modules'), join(project, 'node_modules'))
 const pets = join(project, 'pets')
 const userPets = join(project, 'user-pets')
