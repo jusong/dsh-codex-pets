@@ -1,6 +1,6 @@
 {
   "name": "dsh-codex-pets",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "private": true,
   "description": "A floating DeepSeek whale desktop pet for DSH Desktop (macOS). The window is an Electron app shipped as JavaScript; Electron itself is downloaded on first launch.",
   "license": "MIT",
