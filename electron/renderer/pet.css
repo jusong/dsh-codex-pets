@@ -12,11 +12,18 @@ html, body {
 #stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
 body[data-strip="1"] #stage { align-items: flex-start; }
 
-/* The pet is the drag region: macOS moves the window by itself. */
+/* The pet box is not the drag region. A filtered canvas inside a drag
+   region is rebuilt on the first press, and the pet blinks for a frame.
+   #hit is an empty layer that macOS drags instead. */
 #pet {
   position: relative; flex: none;
   width: var(--edge); height: var(--edge);
+  -webkit-app-region: no-drag;
+}
+#hit {
+  position: absolute; inset: 0; z-index: 2;
   -webkit-app-region: drag;
+  background: transparent;
 }
 
 #sprite {

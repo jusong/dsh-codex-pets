@@ -218,6 +218,25 @@ function makePlayer(manifest = v2, extra = {}) {
   eq(frames.at(-1)[0], 1, 'then a direction starts the run')
 }
 {
+  // The cursor is already on the pet, so a gaze message can arrive after the
+  // press. That update, and the idle clock, must not replace the picture.
+  const { player, frames, run } = makePlayer()
+  player.look(0)
+  const held = frames.at(-1)
+  player.holdForDrag()
+  player.look(90)
+  player.setWorkRunning(true)
+  run(500)
+  eq(frames.at(-1), held, 'the press keeps the picture already on screen')
+  player.setWorkRunning(false)
+  player.setDragDirection(true)
+  player.look(180)
+  eq(frames.at(-1)[0], 1, 'gaze stays out while the pet is running')
+  player.endDrag()
+  player.look(180)
+  eq(frames.at(-1)[0], 10, 'gaze works again after the drag')
+}
+{
   // Idle turns: with the random source pinned to 0, the first turn comes after idleMin.
   const { player, frames, run } = makePlayer()
   run(player.manifest.idleMin + 50)

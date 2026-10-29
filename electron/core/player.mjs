@@ -169,6 +169,8 @@ export class SpritePlayer {
     this.animation = null
     this.sequence = null
     this.dragAnimation = null
+    /** Pressed, but not yet running. The picture on screen stays put. */
+    this.dragHold = false
     this.lookFrame = null
     this.reacting = false
     /** Keep the pet in its running row while a listed session is working. */
@@ -196,7 +198,7 @@ export class SpritePlayer {
   }
 
   get dragging() {
-    return this.dragAnimation !== null
+    return this.dragHold || this.dragAnimation !== null
   }
 
   get performing() {
@@ -208,6 +210,9 @@ export class SpritePlayer {
       this.show(this.idleRow, 0)
       return
     }
+    // The press has not picked a direction yet. Advancing the idle clock
+    // here would replace the picture the user just grabbed.
+    if (this.dragHold && this.dragAnimation === null) return
     if (this.sequence !== null) {
       this.stepSequence(delta)
       return
@@ -346,13 +351,14 @@ export class SpritePlayer {
   holdForDrag() {
     this.sequence = null
     this.reacting = false
+    this.dragHold = true
   }
 
   /** Stay in the drag-right gait while sessions are working. */
   setWorkRunning(on) {
     this.workRunning = on
     if (on) this.lookFrame = null
-    if (this.dragAnimation !== null || this.sequence !== null) return
+    if (this.dragHold || this.dragAnimation !== null || this.sequence !== null) return
     if (on) {
       if (this.animation?.animation.name !== this.workAnimationName) this.play(this.workAnimationName, true)
       else this.draw()
@@ -397,6 +403,7 @@ export class SpritePlayer {
   }
 
   endDrag() {
+    this.dragHold = false
     this.dragAnimation = null
     this.resumeAfterOneShot()
   }
@@ -404,7 +411,9 @@ export class SpritePlayer {
   /** Look in a direction: 0 degrees is straight up, growing clockwise. */
   look(degrees) {
     // A working pet is already mid-stride; staring would replace the gait.
-    if (this.workRunning) return
+    // A drag just started from whatever pose is on screen; a late gaze
+    // message must not swap that pose for one frame.
+    if (this.workRunning || this.dragHold || this.dragAnimation !== null) return
     const { lookRows, lookCount, lookStep, columns } = this.manifest
     if (lookRows.length === 0) return
     const bucket = Math.floor(degrees / lookStep + 0.5)
@@ -418,6 +427,7 @@ export class SpritePlayer {
   }
 
   lookOut() {
+    if (this.dragHold || this.dragAnimation !== null) return
     if (this.lookFrame === null) return
     this.lookFrame = null
     this.draw()

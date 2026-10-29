@@ -174,7 +174,12 @@ function place({ reserved, drawn, keepOnScreen }) {
     chrome,
     visible: keepOnScreen ? visibleAreaAt(center) : null,
   })
-  win.setBounds(bounds)
+  // The host repeats the session list every few seconds. The same bounds
+  // again is no change, and a setBounds on a transparent window is not free.
+  const now = win.getBounds()
+  if (now.x !== bounds.x || now.y !== bounds.y || now.width !== bounds.width || now.height !== bounds.height) {
+    win.setBounds(bounds)
+  }
   laid = { edge: drawn, chrome }
   sendView()
 }
@@ -236,10 +241,54 @@ const decider = createClickDecider({
       process.stdout.write(out.activate())
       toPet('pet:react')
     }
-    // The press made the panel key. Give the keyboard back.
-    win.blur()
+    // The press made the panel key. Give that back, so the next press is
+    // a focus again. Not `win.blur()`: on macOS that is orderOut followed by
+    // orderBack, and the whole pet vanishes for a moment.
+    releaseKey()
   },
 })
+
+/**
+ * A one-pixel window nobody can see or hit. Making it key is how the pet
+ * stops being key without leaving the screen.
+ * @type {BrowserWindow | null}
+ */
+let keyKeeper = null
+
+function createKeyKeeper() {
+  keyKeeper = new BrowserWindow({
+    x: 0, y: 0, width: 1, height: 1,
+    show: false,
+    frame: false,
+    transparent: true,
+    hasShadow: false,
+    roundedCorners: false,
+    resizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    backgroundColor: '#00000000',
+    ...adapter.windowOptions,
+    webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false },
+  })
+  keyKeeper.setIgnoreMouseEvents(true)
+  keyKeeper.setOpacity(0)
+  adapter.float(keyKeeper, app)
+  keyKeeper.loadURL('data:text/html,<body style="background:transparent"></body>')
+  keyKeeper.once('ready-to-show', () => {
+    if (keyKeeper !== null && !keyKeeper.isDestroyed()) keyKeeper.showInactive()
+  })
+}
+
+function releaseKey() {
+  // No isVisible() check: a 1px window at zero opacity may be reported as
+  // occluded, and `show()` is what makes it key whatever it reports.
+  if (keyKeeper !== null && !keyKeeper.isDestroyed()) {
+    keyKeeper.show()
+    return
+  }
+  // No keeper (it failed to start): fall back to the blink rather than keep the key.
+  if (win !== null && !win.isDestroyed()) win.blur()
+}
 
 // -- drag ---------------------------------------------------------------------
 
@@ -608,24 +657,15 @@ function createPetWindow(pet) {
   laid = { edge: size, chrome: 0 }
   adapter.float(win, app)
 
-  // Becoming key, or the first move, otherwise swaps in an opaque backing
-  // store for one frame. Pin the clear colour again on those transitions.
-  const pinClear = () => {
-    if (win === null || win.isDestroyed()) return
-    win.setBackgroundColor('#00000000')
-    win.setHasShadow(false)
-  }
+  // Do not call setBackgroundColor once the window is visible. On a
+  // transparent window that rebuilds the backing store, and the pet blinks
+  // on the press that starts a drag. The clear colour is pinned before show.
   win.on('will-move', () => {
-    if (!dragging) pinClear()
     decider.willMove()
     noteMoved()
   })
   win.on('moved', noteMoved)
-  win.on('focus', () => {
-    pinClear()
-    decider.focus()
-  })
-  win.on('blur', pinClear)
+  win.on('focus', () => decider.focus())
   // A press the page saw is not a click on the pet; a press on the drag region never reaches the page.
   win.webContents.on('before-mouse-event', (_event, mouse) => {
     if (mouse.type === 'mouseDown') decider.pagePress()
@@ -653,6 +693,7 @@ function createPetWindow(pet) {
       win.showInactive()
       shownAt = monotonic()
       adapter.float(win, app)
+      if (keyKeeper === null) createKeyKeeper()
     }
   })
   ipcMain.on('pet:contextmenu', (event) => {
