@@ -339,6 +339,15 @@ export class SpritePlayer {
     this.resumeAfterOneShot()
   }
 
+  /**
+   * A drag just started. Stop a show, but do not redraw: the press should
+   * leave the current picture in place until a direction arrives.
+   */
+  holdForDrag() {
+    this.sequence = null
+    this.reacting = false
+  }
+
   /** Stay in the drag-right gait while sessions are working. */
   setWorkRunning(on) {
     this.workRunning = on

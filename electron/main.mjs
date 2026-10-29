@@ -596,6 +596,8 @@ function createPetWindow(pet) {
     frame: false,
     transparent: true,
     hasShadow: false,
+    // A rounded mask paints one opaque frame the first time the window moves.
+    roundedCorners: false,
     resizable: false,
     fullscreenable: false,
     skipTaskbar: true,
@@ -606,12 +608,24 @@ function createPetWindow(pet) {
   laid = { edge: size, chrome: 0 }
   adapter.float(win, app)
 
+  // Becoming key, or the first move, otherwise swaps in an opaque backing
+  // store for one frame. Pin the clear colour again on those transitions.
+  const pinClear = () => {
+    if (win === null || win.isDestroyed()) return
+    win.setBackgroundColor('#00000000')
+    win.setHasShadow(false)
+  }
   win.on('will-move', () => {
+    if (!dragging) pinClear()
     decider.willMove()
     noteMoved()
   })
   win.on('moved', noteMoved)
-  win.on('focus', () => decider.focus())
+  win.on('focus', () => {
+    pinClear()
+    decider.focus()
+  })
+  win.on('blur', pinClear)
   // A press the page saw is not a click on the pet; a press on the drag region never reaches the page.
   win.webContents.on('before-mouse-event', (_event, mouse) => {
     if (mouse.type === 'mouseDown') decider.pagePress()
@@ -629,6 +643,13 @@ function createPetWindow(pet) {
     toPet('pet:sessions', { items: sessions })
     toPet('pet:motion', { on: motionOn })
     if (!win.isVisible()) {
+      // Build the transparent surface while the window is still hidden.
+      // Doing this after it is on screen is the flash.
+      const bounds = win.getBounds()
+      win.setBounds({ ...bounds, x: bounds.x + 1 })
+      win.setBounds(bounds)
+      win.setBackgroundColor('#00000000')
+      win.setHasShadow(false)
       win.showInactive()
       shownAt = monotonic()
       adapter.float(win, app)

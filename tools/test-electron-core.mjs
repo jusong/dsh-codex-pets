@@ -207,6 +207,17 @@ function makePlayer(manifest = v2, extra = {}) {
   eq(frames.at(-1)[0], 0, 'and goes back to idle')
 }
 {
+  const { player, frames, run } = makePlayer()
+  player.look(0)
+  const held = frames.at(-1)
+  eq(held[0], 9, 'the pet is looking')
+  player.holdForDrag()
+  run(80)
+  eq(frames.at(-1), held, 'the press that starts a drag does not swap the picture')
+  player.setDragDirection(true)
+  eq(frames.at(-1)[0], 1, 'then a direction starts the run')
+}
+{
   // Idle turns: with the random source pinned to 0, the first turn comes after idleMin.
   const { player, frames, run } = makePlayer()
   run(player.manifest.idleMin + 50)

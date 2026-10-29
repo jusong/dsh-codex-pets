@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -128,6 +128,7 @@ try {
   const d = fresh('d', [`${base}/missing`, `${base}/tampered`], { rank: false })
   eq(await d.ensure(), null, 'null when every source fails')
   eq(d.snapshot().status, 'failed', 'status failed')
+  eq(d.snapshot().installed, false, 'a failed download is not installed')
   eq(d.snapshot().attempts.length, 2, 'every attempt listed')
   ok(!existsSync(join(work, 'd', `${FILE}.${process.pid}.part`)), 'no partial file left behind')
   ok(!existsSync(join(work, 'd', '.lock')), 'the lock is released after a failure')
@@ -180,6 +181,27 @@ try {
   await k.ensure()
   ok(!existsSync(join(work, 'k', '1.0.0-darwin-arm64')), 'an older version is removed')
   ok(existsSync(join(work, 'k', 'TEST-darwin-arm64')), 'the current one stays')
+
+  // -- a subscriber that asks again must not turn ready into failed --------
+  const re = fresh('reenter', [`${base}/good`])
+  let reasks = 0
+  re.subscribe((state) => {
+    if (state.status !== 'ready') return
+    reasks += 1
+    if (reasks < 8) re.ensure()
+  })
+  ok((await re.ensure()) !== null, 'still installs when a listener asks again')
+  eq(re.snapshot().status, 'ready', 're-entry does not record a failed download')
+  ok(reasks < 8, 're-entry does not recurse')
+
+  // -- files appearing after a failure clear the error without a download --
+  cpSync(join(work, 'a', 'TEST-darwin-arm64'), join(work, 'd', 'TEST-darwin-arm64'), { recursive: true })
+  hits.length = 0
+  eq(d.refresh().status, 'ready', 'a local runtime clears the failed status')
+  eq(d.snapshot().installed, true, 'and is reported installed')
+  eq(d.refresh().error, '', 'the download error is gone')
+  ok((await d.ensure()) !== null, 'ensure uses the local runtime')
+  eq(hits.length, 0, 'and does not download it again')
 } finally {
   server.closeAllConnections?.()
   server.close()

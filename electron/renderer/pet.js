@@ -191,6 +191,17 @@ function progressLabel() {
   return running === 0 ? String(total) : `${running}/${total}`
 }
 
+/** Fit the label inside the round ball. Wider text scales down; the ball does not grow. */
+function showCount(label) {
+  count.textContent = label
+  count.style.setProperty('--count-scale', '1')
+  const width = count.scrollWidth
+  // Inside the 36px ball, clear of the 5px rim.
+  const available = 22
+  const scale = width > available ? available / width : 1
+  if (scale < 1) count.style.setProperty('--count-scale', String(Math.round(scale * 1000) / 1000))
+}
+
 function renderChrome() {
   const strip = view.chrome > 0
   document.body.dataset.strip = strip ? '1' : '0'
@@ -206,11 +217,9 @@ function renderChrome() {
 
   const words = wordsFor(chinese)
   const busy = items.some((item) => item.status === 'running')
-  const label = view.expanded ? '' : progressLabel()
-  count.textContent = label
-  count.className = label.includes('/') ? 'ratio' : ''
-  ball.className = `${label.includes('/') || label.length > 2 ? '' : 'circle'}${busy ? ' busy' : ''}`.trim()
-  chevron.hidden = !view.expanded
+  showCount(progressLabel())
+  ball.className = busy ? 'busy' : ''
+  chevron.hidden = true
 
   list.replaceChildren()
   list.hidden = !view.expanded || items.length === 0
@@ -285,8 +294,8 @@ window.bridge.on('pet:gaze', ({ degrees, inside }) => {
 })
 
 window.bridge.on('pet:drag-begin', () => {
-  player?.interrupt()
-  // A drag puts the next show off.
+  // Keep the frame already on screen. Swapping sprites on the press is the blink.
+  player?.holdForDrag()
   schedulePerformance(20)
 })
 window.bridge.on('pet:drag-dir', ({ right }) => player?.setDragDirection(right))

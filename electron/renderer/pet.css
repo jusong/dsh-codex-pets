@@ -22,7 +22,12 @@ body[data-strip="1"] #stage { align-items: flex-start; }
 #sprite {
   position: absolute; inset: 0; width: 100%; height: 100%;
   object-fit: contain; image-rendering: pixelated;
+  background: transparent;
+  /* Keep the filtered layer allocated. The first drag otherwise rebuilds it
+     and the pet blinks for a frame. */
   filter: drop-shadow(0 8px 5px rgba(8, 22, 44, .22));
+  transform: translateZ(0);
+  backface-visibility: hidden;
 }
 
 /* Just under the feet, which land around 70% down the cell. */
@@ -45,36 +50,46 @@ body[data-motion="1"] #shadow { transition: transform .18s ease, opacity .18s ea
 #chrome[hidden], #list[hidden], #chevron[hidden] { display: none; }
 #ball {
   position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
-  box-sizing: border-box; height: 36px; min-width: 36px; padding: 0 16px;
-  border-radius: 18px; background: #fff;
+  box-sizing: border-box; width: 36px; height: 36px; padding: 0;
+  border-radius: 50%; background: #fff;
   box-shadow: 0 1px 8px rgba(0, 0, 0, .16);
   display: flex; align-items: center; justify-content: center;
   color: #525252; font-weight: 600; font-variant-numeric: tabular-nums;
   pointer-events: auto; -webkit-app-region: no-drag;
 }
-#ball.circle { padding: 0; width: 36px; }
-#count { font-size: 15px; line-height: 18px; position: relative; }
-#count.ratio { font-size: 13px; }
+#count {
+  position: relative; z-index: 1;
+  font-size: 15px; line-height: 1; white-space: nowrap;
+  transform: scale(var(--count-scale, 1));
+}
 #chevron { position: absolute; inset: 0; width: 100%; height: 100%; }
 
-/* A soft halo, and a light that travels the ball's edge, while a session works. */
-#ring { display: none; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; }
+/* A soft halo, and a light that travels the rim, while a session works.
+   The angle is animated instead of rotating the box, so a non-square
+   label can never turn the rim into an ellipse. The ball itself stays 36×36. */
+@property --ring-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+#ring { display: none; position: absolute; inset: 0; border-radius: 50%; pointer-events: none; }
 #ball.busy { box-shadow: 0 0 10px rgba(59, 122, 255, .45), 0 1px 8px rgba(0, 0, 0, .1); }
 #ball.busy #ring { display: block; }
 #ring::before {
-  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  content: ""; position: absolute; inset: 0; border-radius: 50%;
   box-shadow: 0 0 0 2px rgba(59, 122, 255, .35);
 }
 #ring::after {
-  content: ""; position: absolute; inset: 2.75px; border-radius: inherit;
+  content: ""; position: absolute; inset: 2.75px; border-radius: 50%;
   padding: 2.25px; box-sizing: border-box;
-  background: conic-gradient(from 0deg, rgba(59, 122, 255, 0), rgba(59, 122, 255, .08) 20%, rgba(59, 122, 255, .55) 72%, #3b7aff);
+  background: conic-gradient(from var(--ring-angle), rgba(59, 122, 255, 0), rgba(59, 122, 255, .08) 20%, rgba(59, 122, 255, .55) 72%, #3b7aff);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor; mask-composite: exclude;
 }
 body[data-motion="1"] #ball.busy { animation: breathe 1.4s ease-in-out infinite alternate; }
-body[data-motion="1"] #ball.busy #ring::after { animation: orbit 1.8s linear infinite; }
+body[data-motion="1"] #ball.busy #ring::after { animation: ring-orbit 1.8s linear infinite; }
 @keyframes breathe { from { box-shadow: 0 0 6px rgba(59, 122, 255, .2), 0 1px 8px rgba(0, 0, 0, .1); } to { box-shadow: 0 0 12px rgba(59, 122, 255, .6), 0 1px 8px rgba(0, 0, 0, .1); } }
+@keyframes ring-orbit { to { --ring-angle: 360deg; } }
 @keyframes orbit { to { transform: rotate(360deg); } }
 
 #list {

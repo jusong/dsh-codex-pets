@@ -20,7 +20,26 @@ DSH Desktop 的 macOS 桌面宠物：一只 DeepSeek 小鲸鱼浮在所有窗口
 
 需要 macOS 13+ 和 DSH Desktop 0.2.1+。
 
-直接从 GitHub 装，插件的依赖由 profile 的 pnpm 一起装好：
+### 先启用桌面版的 `dsh`
+
+`desktop` 这个 profile 只归 DeepSeek Harness 管。`npm install -g @deepseek-ai/dsh` 装出来的命令会拒绝它：
+
+```text
+error: profile "desktop" is managed exclusively by the Electron application
+```
+
+在 DeepSeek Harness 菜单栏打开 **Manage dsh Command…**（就在 **Check for Updates…** 下面），选 **Install**。macOS 会在 `/usr/local/bin/dsh` 放一个指向应用自带运行时的命令，目录需要权限时会要求管理员密码。这一步不改 shell 配置文件。
+
+新开一个终端确认用的是这一份：
+
+```sh
+which dsh
+dsh --version
+```
+
+`which` 应指向 `/usr/local/bin/dsh`。如果仍是 Homebrew 或 npm 的全局包（常见是 `/opt/homebrew/bin/dsh`，而且它排在 `/usr/local/bin` 前面），先卸掉那一份，例如 `npm uninstall -g @deepseek-ai/dsh`，再开一个新终端。应用换过位置之后，用同一菜单里的 **Repair**。
+
+然后从 GitHub 安装。插件的依赖由 profile 的 pnpm 一起装好：
 
 ```sh
 dsh plugin --profile desktop add github:jusong/dsh-codex-pets
@@ -64,7 +83,7 @@ dsh plugin --profile desktop add github:jusong/dsh-codex-pets
     shortcut: Command+Option+N  # 打开新会话输入框；留空关闭
 ```
 
-用户装的宠物放在 `~/.dsh/dsh-codex-pets/`，顺序记在同目录的 `pets.json`。旧版用的是 `~/.dsh/pets`，升级后首次启动会自动搬过去。
+用户装的宠物放在 `~/.dsh/dsh-codex-pets/`，顺序记在同目录的 `pets.json`。
 
 ## 宠物
 
