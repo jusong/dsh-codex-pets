@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Install pets made for Codex into the user pet store (`~/.dsh/dsh-codex-pets`).
+ * Install pets made for Codex into the user pet store (`~/.dsh/dsh-codex-pets/pets`).
  *
  *   node tools/install-pet.mjs deepseek
  *   node tools/install-pet.mjs https://codex-pets.net/#/pets/deepseek
@@ -14,18 +14,19 @@
  *   a folder with pet.json           e.g. anything under ~/.codex/pets
  *   a .zip (file or URL)             the package the site's Download gives
  *
- * and is installed as `~/.dsh/dsh-codex-pets/<id>/` holding the `pet.json` and the atlas.
- * That is the whole Codex format, so a pet needs nothing else: the plugin fills
- * in the rows and timings the Codex contract fixes, and the settings page picks
- * the pet up on its next refresh. Nothing has to be registered. Shipped pets
- * stay in the plugin's `pets/`; installs never land there.
+ * and is installed as `~/.dsh/dsh-codex-pets/pets/<id>/` holding the `pet.json`
+ * and the atlas. That is the whole Codex format, so a pet needs nothing else:
+ * the plugin fills in the rows and timings the Codex contract fixes, and the
+ * settings page picks the pet up on its next refresh. Nothing has to be
+ * registered. Shipped pets stay in the plugin's `pets/`; installs never land
+ * there.
  *
  * Options
  *   --id <id>           install under another directory name (one source only)
  *   --force             replace a pet that is already installed under that id
  *   --codex-home        read bare ids from ~/.codex/pets instead of the registry
  *   --registry <url>    another registry host (default https://codex-pets.net)
- *   --pets-dir <dir>    install somewhere else (default: ~/.dsh/dsh-codex-pets)
+ *   --pets-dir <dir>    install somewhere else (default: ~/.dsh/dsh-codex-pets/pets)
  *   --dry-run           check the source and say what would happen
  *
  * No dependencies: Node 18+, and `unzip` (macOS has it) for zip packages.

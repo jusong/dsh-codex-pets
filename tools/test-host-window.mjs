@@ -7,7 +7,7 @@
  * the host, and goes away when the host is killed outright.
  *
  * Electron is not downloaded here. If the machine has not fetched it yet
- * (`~/.dsh/dsh-codex-pets-runtime`) the test says so and passes.
+ * (`~/.dsh/dsh-codex-pets/runtime`) the test says so and passes.
  *
  *   node tools/test-host-window.mjs
  */
@@ -19,7 +19,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const realRuntime = join(homedir(), '.dsh', 'dsh-codex-pets-runtime')
+const realRuntime = join(homedir(), '.dsh', 'dsh-codex-pets', 'runtime')
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const alive = (pid) => {
   try {
@@ -78,16 +78,18 @@ if (process.argv[2] === 'child') {
   }
 
   // A home of its own, so the test never touches the real lock or state files.
+  // USER_DIR points at …/pets; the data root is its parent (see pluginDataDir).
   const home = mkdtempSync(join(tmpdir(), 'dsh-host-window-'))
-  mkdirSync(join(home, '.dsh'), { recursive: true })
-  symlinkSync(realRuntime, join(home, '.dsh', 'dsh-codex-pets-runtime'))
-  const lock = join(home, '.dsh', 'dsh-codex-pets.pid')
-  const state = join(home, '.dsh', 'dsh-codex-pets-state.json')
+  const data = join(home, 'dsh-codex-pets')
+  mkdirSync(data, { recursive: true })
+  symlinkSync(realRuntime, join(data, 'runtime'))
+  const lock = join(data, 'dsh-codex-pets.pid')
+  const state = join(data, 'dsh-codex-pets-state.json')
 
   async function launch() {
     const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'child'], {
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
-      env: { ...process.env, HOME: home, ELECTRON_RUN_AS_NODE: '1', DSH_CODEX_PETS_USER_DIR: join(home, 'pets') },
+      env: { ...process.env, HOME: home, ELECTRON_RUN_AS_NODE: '1', DSH_CODEX_PETS_USER_DIR: join(data, 'pets') },
     })
     await until(() => new Promise((resolve) => child.once('message', () => resolve(true))), 10000, 'the host to mount')
     const windowPid = await until(() => {

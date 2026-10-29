@@ -4,7 +4,7 @@ Port a custom Codex pet into this project.
 
 The official pets come off the Codex CDN or out of the desktop bundle, but
 Codex also lets you install pets of your own. Those live in a directory
-under ``~/.codex/pets/`` (or ``~/.dsh/dsh-codex-pets/``) with a ``pet.json`` and a
+under ``~/.codex/pets/`` (or ``~/.dsh/dsh-codex-pets/pets/``) with a ``pet.json`` and a
 ``spritesheet.webp``, in one of the two shapes Codex uses -- 8 columns of
 192x208 cells, 9 rows (v1) or 11 rows with the gaze rows (v2) -- so they
 only need a manifest in this project's dialect and a gallery preview.

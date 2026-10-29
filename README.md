@@ -47,7 +47,7 @@ dsh plugin --profile desktop add github:jusong/dsh-codex-pets
 
 要固定版本就带上 tag，例如 `github:jusong/dsh-codex-pets#v0.12.0`。
 
-装完重启 DSH。第一次会下载 Electron（约 120 MB）到 `~/.dsh/dsh-codex-pets-runtime/`，校验通过后鲸鱼出现在屏幕右下、输入框上方。之后直接用已下载的那一份。
+装完重启 DSH。第一次会下载 Electron（约 120 MB）到 `~/.dsh/dsh-codex-pets/runtime/`，校验通过后鲸鱼出现在屏幕右下、输入框上方。之后直接用已下载的那一份。
 
 如果没出现，在 `~/.dsh/profiles/desktop/cordis.patch.yml` 里手动加上这段，让 loader 加载它：
 
@@ -83,20 +83,20 @@ dsh plugin --profile desktop add github:jusong/dsh-codex-pets
     shortcut: Command+Option+N  # 打开新会话输入框；留空关闭
 ```
 
-用户装的宠物放在 `~/.dsh/dsh-codex-pets/`，顺序记在同目录的 `pets.json`。
+用户装的宠物放在 `~/.dsh/dsh-codex-pets/pets/`，顺序记在同目录的 `pets.json`。Electron 和其他运行文件在同级的 `runtime/`。
 
 ## 宠物
 
 内置一只 `deepseek-whale`（v1 图集，8 列 × 9 行）。宠物就是一份 `pet.json` 加一张精灵图集，格式和 Codex 的完全一致。
 
 - 想用现成的：在设置页安装，或者 `node tools/install-pet.mjs <id | 链接 | zip | 目录>`；
-- 想做自己的：把图集和 manifest 放进 `~/.dsh/dsh-codex-pets/<id>/`；手上已有 Codex 宠物的话，`python3 tools/port_custom_pet.py` 能直接转过来。
+- 想做自己的：把图集和 manifest 放进 `~/.dsh/dsh-codex-pets/pets/<id>/`；手上已有 Codex 宠物的话，`python3 tools/port_custom_pet.py` 能直接转过来。
 
 ## 桌面窗口
 
-宠物画在 `electron/` 里的一个小窗口中，源码是普通 JavaScript，随插件一起发，仓库里没有需要编译的二进制。Electron 本体不打包：第一次显示宠物时，插件把它下载到 `~/.dsh/dsh-codex-pets-runtime/electron`，用固定的 SHA-256 校验后再解压。
+宠物画在 `electron/` 里的一个小窗口中，源码是普通 JavaScript，随插件一起发，仓库里没有需要编译的二进制。Electron 本体不打包：第一次显示宠物时，插件把它下载到 `~/.dsh/dsh-codex-pets/runtime/electron`，用固定的 SHA-256 校验后再解压。
 
-内置两个地址（GitHub Releases 和 npmmirror），先试答得快的那个，失败再换下一个。都失败时，到设置 → 宠物里点重试，或者填一个自己的下载地址。不想走网络的话，把对应的 zip（文件名写在设置页上）放进 `~/.dsh/dsh-codex-pets-runtime/electron/drop/` 再点重试。
+内置两个地址（GitHub Releases 和 npmmirror），先试答得快的那个，失败再换下一个。都失败时，到设置 → 宠物里点重试，或者填一个自己的下载地址。不想走网络的话，把对应的 zip（文件名写在设置页上）放进 `~/.dsh/dsh-codex-pets/runtime/electron/drop/` 再点重试。
 
 拖动交给系统窗口服务（页面上的原生拖动区域），脚本不逐帧挪窗口。目前只做了 macOS；和系统相关的部分在 `electron/platform/`，以后加 Windows 是新加一个适配器，再在 `lib/electron-runtime.js` 里加一行下载目标。
 
@@ -118,4 +118,4 @@ python3 tools/check_pets.py         # 图集契约
 
 代码和内置宠物（`pets/deepseek-whale`）以 **MIT** 许可证发布，见 [LICENSE](LICENSE)。
 
-Codex 官方那 9 只宠物是 OpenAI 的第一方资产，**不在本仓库中分发**：设置页的「从 Codex 导入」只读本机 `~/.codex/pets` 和 `ChatGPT.app` 里已有的副本，装进你自己的 `~/.dsh/dsh-codex-pets/`，不涉及再分发。从 codex-pets.net 安装的社区宠物各自由其作者授权。
+Codex 官方那 9 只宠物是 OpenAI 的第一方资产，**不在本仓库中分发**：设置页的「从 Codex 导入」只读本机 `~/.codex/pets` 和 `ChatGPT.app` 里已有的副本，装进你自己的 `~/.dsh/dsh-codex-pets/pets/`，不涉及再分发。从 codex-pets.net 安装的社区宠物各自由其作者授权。

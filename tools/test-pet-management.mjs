@@ -315,7 +315,7 @@ ok(existsSync(join(userPets, 'wangcai', 'pet.json')), 'into the user store')
 ok(!existsSync(join(pets, 'wangcai')), 'not into the bundled tree')
 eq(JSON.parse(readFileSync(join(userPets, 'codex', 'pet.json'), 'utf8')).source, 'Codex app bundle (ChatGPT.app)',
   'an app pet records where it came from')
-ok(existsSync(join(base, 'cache', 'dsh-codex-pets', 'codex-app', 'codex', 'spritesheet.webp')), 'the atlas is extracted next to the user store')
+ok(existsSync(join(base, 'cache', 'codex-app', 'codex', 'spritesheet.webp')), 'the atlas is extracted under the plugin data dir')
 const orderAfter = JSON.parse(readFileSync(join(userPets, 'pets.json'), 'utf8')).map((e) => e.id)
 ok(orderAfter.indexOf('wangcai') > orderAfter.indexOf('remote-whale'), 'imported pets append after earlier installs')
 
@@ -334,21 +334,19 @@ eq([r.status, r.body.error.code], [502, 'unreachable'], 'a registry that is down
 
 eq(stagings(), stagingsBefore, 'no staging folder is left')
 
-// A store left at the pre-rename path moves on the first start, pets and all.
+// Default store paths under ~/.dsh/dsh-codex-pets/{pets,runtime}.
 const fakeHome = join(base, 'home')
-mkdirSync(join(fakeHome, '.dsh', 'pets', 'kept'), { recursive: true })
-writeFileSync(join(base, 'migrate-probe.mjs'), `
-  const { migrateLegacyUserDir, userPetsDir } = await import(${JSON.stringify(pathToFileURL(join(project, 'lib', 'pet-store.js')).href)})
-  process.stdout.write(JSON.stringify({ dir: userPetsDir(), first: migrateLegacyUserDir(), second: migrateLegacyUserDir() }))
+writeFileSync(join(base, 'paths-probe.mjs'), `
+  const { pluginDataDir, runtimeDir, userPetsDir } = await import(${JSON.stringify(pathToFileURL(join(project, 'lib', 'pet-store.js')).href)})
+  process.stdout.write(JSON.stringify({ data: pluginDataDir(), pets: userPetsDir(), runtime: runtimeDir() }))
 `)
-const migrated = JSON.parse(execFileSync(process.execPath, [join(base, 'migrate-probe.mjs')], {
+const paths = JSON.parse(execFileSync(process.execPath, [join(base, 'paths-probe.mjs')], {
   encoding: 'utf8',
-  env: { ...process.env, HOME: fakeHome, DSH_CODEX_PETS_USER_DIR: '' },
+  env: { ...process.env, HOME: fakeHome, DSH_CODEX_PETS_USER_DIR: '', DSH_CODEX_PETS_DATA_DIR: '' },
 }))
-eq(migrated.dir, join(fakeHome, '.dsh', 'dsh-codex-pets'), 'the user store moves to the new name')
-eq(migrated.first, migrated.dir, 'the old store is moved, not copied')
-ok(existsSync(join(migrated.dir, 'kept')), 'with the installed pets')
-eq(migrated.second, null, 'and only once')
+eq(paths.data, join(fakeHome, '.dsh', 'dsh-codex-pets'), 'plugin data lives under ~/.dsh/dsh-codex-pets')
+eq(paths.pets, join(paths.data, 'pets'), 'installed pets are in pets/')
+eq(paths.runtime, join(paths.data, 'runtime'), 'Electron is in runtime/')
 
 rmSync(base, { recursive: true, force: true })
 console.log(`\npet management: ${checks} checks passed`)
