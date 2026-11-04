@@ -50,6 +50,13 @@ eq(parseCommand('sessions {'), null, 'broken json')
 eq(parseCommand('nonsense'), null, 'unknown line')
 eq(out.open('s1'), 'open s1\n', 'open line')
 eq(out.ask('w1', 'hi'), 'ask {"workspaceId":"w1","text":"hi"}\n', 'ask line')
+eq(out.ask('w1', 'hi', []), 'ask {"workspaceId":"w1","text":"hi"}\n', 'no picture: the line is byte-identical to before')
+eq(out.ask('w1', 'hi', [{ mediaType: 'image/png', data: 'AAAA' }]),
+  'ask {"workspaceId":"w1","text":"hi","images":[{"mediaType":"image/png","data":"AAAA"}]}\n',
+  'a pasted picture is on the same line as the question')
+eq(out.ask('w1', '', [{ mediaType: 'image/png', data: 'AAAA' }, { mediaType: 'image/jpeg', data: 'BBBB' }]),
+  'ask {"workspaceId":"w1","text":"","images":[{"mediaType":"image/png","data":"AAAA"},{"mediaType":"image/jpeg","data":"BBBB"}]}\n',
+  'every picture is on the line, in order')
 
 // -- layout ---------------------------------------------------------------
 eq(layout.chromeHeight({ chromeOn: false, count: 3, expanded: true }), 0, 'chrome off')
@@ -102,8 +109,10 @@ eq(toAccelerator(null), null, 'not a string')
   let clock = 1000
   const timers = []
   const decisions = []
+  const point = { x: 500, y: 400 }
   const decider = createClickDecider({
     now: () => clock,
+    cursor: () => ({ ...point }),
     setTimer: (fn, ms) => { timers.push({ fn, at: clock + ms }); return timers.length },
     clearTimer: (id) => { if (timers[id - 1]) timers[id - 1].fn = null },
     onDecision: (kind) => decisions.push(kind),
@@ -120,10 +129,12 @@ eq(toAccelerator(null), null, 'not a string')
   }
   decider.focus(); advance(200)
   eq(decisions.at(-1), 'click', 'a bare focus is a click')
-  decider.focus(); advance(55); decider.willMove(); advance(200)
-  eq(decisions.at(-1), 'drag', 'will-move after focus is a drag (the measured case)')
-  advance(1000); decider.willMove(); advance(22); decider.focus(); advance(200)
-  eq(decisions.at(-1), 'drag', 'will-move just before focus is a drag too (the case the probe got wrong)')
+  decider.focus(); advance(60); point.x += 40; advance(200)
+  eq(decisions.at(-1), 'drag', 'a press that carried the cursor away is a drag')
+  advance(1000); point.x += 1; decider.focus(); advance(60); point.y += 2; advance(200)
+  eq(decisions.at(-1), 'click', 'a shaky hand still clicks')
+  advance(1000); decider.focus(); advance(60); point.y -= 120; advance(200)
+  eq(decisions.at(-1), 'drag', 'a long vertical drag is a drag too')
   advance(1000); decider.focus(); advance(40); decider.pagePress(); advance(200)
   eq(decisions.at(-1), 'ignored', 'a press the page saw is not a click on the pet')
   advance(1000); decider.pagePress(); advance(20); decider.focus(); advance(200)
@@ -131,9 +142,40 @@ eq(toAccelerator(null), null, 'not a string')
   advance(2000); decider.focus(); advance(200)
   eq(decisions.at(-1), 'click', 'old events do not leak into the next press')
   const guarded = []
-  const g = createClickDecider({ now: () => clock, setTimer: (fn) => { fn(); return 0 }, guard: () => false, onDecision: (k) => guarded.push(k) })
+  const g = createClickDecider({ now: () => clock, cursor: () => ({ ...point }), setTimer: (fn) => { fn(); return 0 }, guard: () => false, onDecision: (k) => guarded.push(k) })
   g.focus()
   eq(guarded, ['ignored'], 'a focus the guard rejects is ignored')
+}
+
+// A relayout moves the window under the press. That moves the pet, not the
+// cursor, and it must not cost the user a click.
+{
+  let clock = 1000
+  const timers = []
+  const decisions = []
+  let onPet = true
+  const decider = createClickDecider({
+    now: () => clock,
+    cursor: () => ({ x: 500, y: 400 }),
+    setTimer: (fn, ms) => { timers.push({ fn, at: clock + ms }); return timers.length },
+    clearTimer: (id) => { if (timers[id - 1]) timers[id - 1].fn = null },
+    // Before the press the cursor is on the pet; the window then slides out
+    // from under it, so by the time the press settles it no longer is.
+    guard: () => onPet,
+    onDecision: (kind) => decisions.push(kind),
+  })
+  const advance = (ms) => {
+    clock += ms
+    for (const timer of timers) {
+      if (timer.fn !== null && timer.at <= clock) {
+        const fn = timer.fn
+        timer.fn = null
+        fn()
+      }
+    }
+  }
+  decider.focus(); onPet = false; advance(200)
+  eq(decisions.at(-1), 'click', 'a relayout that slides the window away still leaves a click')
 }
 
 // -- lock -----------------------------------------------------------------

@@ -228,6 +228,7 @@ function resize(requested) {
 
 const decider = createClickDecider({
   now: monotonic,
+  cursor: () => { const point = screen.getCursorScreenPoint(); return { x: point.x, y: point.y } },
   guard: () => {
     if (win === null || monotonic() - shownAt < 1500) return false
     if (askVisible() || monotonic() - askClosedAt < 600) return false
@@ -464,13 +465,29 @@ function ensureAsk() {
   return askWin
 }
 
+/** The card's own size, as it last reported it. An enlarged picture reports a bigger one first. */
+let askCardSize = { width: 360, height: 78 }
+
+/** The card reports its own height once it knows it; it is placed from the pet, always on screen. */
+function placeAsk(width, height, isCard) {
+  if (askWin === null || askWin.isDestroyed() || win === null) return
+  const pet = layout.petOnScreen(win.getBounds(), laid.edge, laid.chrome)
+  const visible = visibleAreaAt({ x: pet.x + pet.width / 2, y: pet.y + pet.height / 2 })
+  // An enlarged picture asks for a bigger window than the screen may have.
+  const size = { width: Math.min(width, visible.width - 24), height: Math.min(height, visible.height - 24) }
+  const origin = layout.askDialogOrigin(pet, size, visible)
+  askWin.setBounds({ x: origin.x, y: origin.y, width: size.width, height: size.height })
+  // Only the card's own size is where the next show starts; the preview borrows the window.
+  if (isCard) askCardSize = size
+}
+
 function showAsk(workspaceId, title) {
   if (win === null) return
   askWorkspaceId = workspaceId
   const card = ensureAsk()
   const pet = layout.petOnScreen(win.getBounds(), laid.edge, laid.chrome)
-  const origin = layout.askDialogOrigin(pet, { width: 360, height: 72 }, visibleAreaAt({ x: pet.x + pet.width / 2, y: pet.y + pet.height / 2 }))
-  card.setPosition(origin.x, origin.y)
+  const origin = layout.askDialogOrigin(pet, askCardSize, visibleAreaAt({ x: pet.x + pet.width / 2, y: pet.y + pet.height / 2 }))
+  card.setBounds({ x: origin.x, y: origin.y, width: askCardSize.width, height: askCardSize.height })
   const payload = { title, chinese: chinese() }
   if (askReady) card.webContents.send('ask:show', payload)
   else askPending = payload
@@ -498,9 +515,23 @@ ipcMain.on('ask:ready', (event) => {
 ipcMain.on('ask:submit', (event, payload) => {
   if (askWin === null || event.sender !== askWin.webContents) return
   const text = typeof payload?.text === 'string' ? payload.text.trim() : ''
-  if (askWorkspaceId === null || text === '') return
-  process.stdout.write(out.ask(askWorkspaceId, text))
+  const images = (Array.isArray(payload?.images) ? payload.images : [])
+    .map((image) => ({
+      mediaType: typeof image?.mediaType === 'string' ? image.mediaType : '',
+      data: typeof image?.data === 'string' ? image.data : '',
+    }))
+    .filter((image) => image.mediaType !== '' && image.data !== '')
+  if (askWorkspaceId === null || (text === '' && images.length === 0)) return
+  process.stdout.write(out.ask(askWorkspaceId, text, images))
   hideAsk()
+})
+
+ipcMain.on('ask:size', (event, payload) => {
+  if (askWin === null || event.sender !== askWin.webContents) return
+  const width = Math.round(Number(payload?.width))
+  const height = Math.round(Number(payload?.height))
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 200 || height < 40) return
+  placeAsk(width, height, payload?.card === true)
 })
 
 ipcMain.on('ask:cancel', (event) => {
@@ -657,14 +688,13 @@ function createPetWindow(pet) {
   laid = { edge: size, chrome: 0 }
   adapter.float(win, app)
 
-  // Do not call setBackgroundColor once the window is visible. On a
-  // transparent window that rebuilds the backing store, and the pet blinks
-  // on the press that starts a drag. The clear colour is pinned before show.
-  win.on('will-move', () => {
-    decider.willMove()
-    noteMoved()
+  // Only a hand on the pet starts a drag. `moved` alone is not that: the
+  // window also moves when the strip is relaid out, and a relayout must not
+  // hold the pet's frame or read as a drag in the log.
+  win.on('will-move', noteMoved)
+  win.on('moved', () => {
+    if (dragging) noteMoved()
   })
-  win.on('moved', noteMoved)
   win.on('focus', () => decider.focus())
   // A press the page saw is not a click on the pet; a press on the drag region never reaches the page.
   win.webContents.on('before-mouse-event', (_event, mouse) => {
@@ -688,6 +718,9 @@ function createPetWindow(pet) {
       const bounds = win.getBounds()
       win.setBounds({ ...bounds, x: bounds.x + 1 })
       win.setBounds(bounds)
+      // Do not call setBackgroundColor once the window is visible. On a
+      // transparent window that rebuilds the backing store, and the pet blinks
+      // on the press that starts a drag. The clear colour is pinned before show.
       win.setBackgroundColor('#00000000')
       win.setHasShadow(false)
       win.showInactive()

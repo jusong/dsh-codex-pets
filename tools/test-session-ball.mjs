@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict'
 import { helperAction } from '../lib/helper-actions.js'
 import { formatShortcut, shortcutFromKeyboard } from '../lib/shortcut.js'
-import { clampSessionLimit, createFocusBus, parseAskLine, rankSessions, sessionMetadata, sessionsLine, shapeCachedRecord, shapeCachedText, titleOf, withWorkspace, workspaceTitle, workspacesLine } from '../lib/session-ball.js'
+import { askContent, clampSessionLimit, createFocusBus, MAX_ASK_IMAGES, MAX_ASK_IMAGE_BYTES, parseAskLine, rankSessions, sessionMetadata, sessionsLine, shapeCachedRecord, shapeCachedText, titleOf, withWorkspace, workspaceTitle, workspacesLine } from '../lib/session-ball.js'
 
 let checks = 0
 const eq = (actual, expected, message) => { assert.deepEqual(actual, expected, message); checks += 1 }
@@ -121,7 +121,42 @@ eq(parseAskLine('ask {"workspaceId":"ws-1","text":"  hello\\n"}'),
   'a submitted question is the trimmed text')
 eq(parseAskLine('ask {"workspaceId":"bad id","text":"hello"}'), null, 'a bad workspace id is not a question')
 eq(parseAskLine('ask {"workspaceId":"ws-1","text":"   "}'), null, 'a blank question is not sent')
+eq(parseAskLine('ask {"workspaceId":"ws-1","text":"hello","images":[{"mediaType":"image/png","data":"AAAA"}]}'),
+  { workspaceId: 'ws-1', text: 'hello', images: [{ mediaType: 'image/png', data: 'AAAA' }] },
+  'a pasted picture rides along with the question')
+eq(parseAskLine('ask {"workspaceId":"ws-1","text":"","images":[{"mediaType":"image/png","data":"AAAA"},{"mediaType":"image/jpeg","data":"BBBB"}]}'),
+  { workspaceId: 'ws-1', text: '', images: [{ mediaType: 'image/png', data: 'AAAA' }, { mediaType: 'image/jpeg', data: 'BBBB' }] },
+  'several pictures on their own are a question, in paste order')
+eq(parseAskLine('ask {"workspaceId":"ws-1","text":"hi","image":{"mediaType":"image/png","data":"AAAA"}}'),
+  { workspaceId: 'ws-1', text: 'hi', images: [{ mediaType: 'image/png', data: 'AAAA' }] },
+  'a line from the one-picture card still reads')
+eq(parseAskLine('ask {"workspaceId":"ws-1","text":"hi","images":[]}'),
+  { workspaceId: 'ws-1', text: 'hi' },
+  'an empty picture list is no picture at all')
+eq(parseAskLine('ask {"workspaceId":"ws-1","text":""}'), null, 'nothing to send is not a question')
+eq(parseAskLine('ask {"workspaceId":"ws-1","text":"hi","images":[{"mediaType":"text/html","data":"AAAA"}]}'),
+  { workspaceId: 'ws-1', text: 'hi' },
+  'a block that is not a picture is dropped, the words still go')
+eq(parseAskLine('ask {"workspaceId":"ws-1","text":"hi","images":[{"mediaType":"image/png","data":"AAAA"},{"mediaType":"image/png"},{"mediaType":"image/png","data":"BBBB"}]}'),
+  { workspaceId: 'ws-1', text: 'hi', images: [{ mediaType: 'image/png', data: 'AAAA' }, { mediaType: 'image/png', data: 'BBBB' }] },
+  'one bad picture in the middle does not cost the good ones')
+eq(parseAskLine(`ask {"workspaceId":"ws-1","text":"hi","images":[{"mediaType":"image/png","data":"${'A'.repeat(MAX_ASK_IMAGE_BYTES / 3 * 4 + 5)}"}]}`),
+  { workspaceId: 'ws-1', text: 'hi' },
+  'an oversized picture is dropped rather than kept')
+eq(parseAskLine(`ask {"workspaceId":"ws-1","text":"hi","images":${JSON.stringify(Array.from({ length: MAX_ASK_IMAGES + 2 }, () => ({ mediaType: 'image/png', data: 'AAAA' })))}}`).images.length,
+  MAX_ASK_IMAGES,
+  'more pictures than the card can hold are cut at the ceiling')
 eq(parseAskLine('open ws-1'), null, 'another helper line is not a question')
+eq(askContent({ text: 'hi' }), [{ type: 'text', text: 'hi' }], 'no picture: the prompt is the words, exactly as before')
+eq(askContent({ text: 'what is this', images: [{ mediaType: 'image/png', data: 'AAAA' }] }),
+  [{ type: 'image', mediaType: 'image/png', data: 'AAAA' }, { type: 'text', text: 'what is this' }],
+  'the picture comes first, the question reads as being about it')
+eq(askContent({ text: '', images: [{ mediaType: 'image/png', data: 'AAAA' }] }),
+  [{ type: 'image', mediaType: 'image/png', data: 'AAAA' }],
+  'a picture alone is a whole prompt')
+eq(askContent({ text: 'compare', images: [{ mediaType: 'image/png', data: 'AAAA' }, { mediaType: 'image/jpeg', data: 'BBBB' }] }),
+  [{ type: 'image', mediaType: 'image/png', data: 'AAAA' }, { type: 'image', mediaType: 'image/jpeg', data: 'BBBB' }, { type: 'text', text: 'compare' }],
+  'every picture goes before the words, in paste order')
 
 eq(helperAction('activate'), { type: 'activate' }, 'a pet click activates DSH')
 eq(helperAction('open session-1'), { type: 'open', id: 'session-1' }, 'a session row activates DSH and opens that session')

@@ -73,5 +73,6 @@ export const out = {
   settings: () => 'settings\n',
   hide: () => 'hide\n',
   open: (id) => `open ${id}\n`,
-  ask: (workspaceId, text) => `ask ${JSON.stringify({ workspaceId, text })}\n`,
+  /** `images` are `{ mediaType, data }` (base64), in paste order; they ride in the same line as the question. */
+  ask: (workspaceId, text, images = []) => `ask ${JSON.stringify(images.length === 0 ? { workspaceId, text } : { workspaceId, text, images })}\n`,
 }

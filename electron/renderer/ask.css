@@ -1,26 +1,59 @@
 :root { color-scheme: light dark; }
 html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden;
   font: 14px -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif; }
+/* The card is content-high (top/left/right only) so the page can measure it and
+   the window hugs it; pictures stack above the field. */
 #card {
-  position: absolute; inset: 0; box-sizing: border-box; border-radius: 16px;
+  position: absolute; left: 0; right: 0; top: 0; box-sizing: border-box; border-radius: 16px;
   background: Canvas; color: CanvasText;
   border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+  padding: 12px 14px 10px;
+  display: flex; flex-direction: column; gap: 6px;
 }
+#card[hidden] { display: none; }
+/* One row, never wrapping: six of these fit the 332px content width (6*48 + 5*6 = 318). */
+#shots { display: flex; flex-wrap: nowrap; gap: 6px; }
+/* An empty tray must not leave a gap above the field. */
+#shots:empty { display: none; }
+.shot { position: relative; width: 48px; height: 48px; flex: none; }
+.shot img {
+  display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 8px; cursor: zoom-in;
+  border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+}
+.shot img:hover { border-color: color-mix(in srgb, CanvasText 45%, transparent); }
+.kill {
+  position: absolute; top: -5px; right: -5px; width: 16px; height: 16px; padding: 0;
+  border-radius: 50%; cursor: pointer; font: 12px/1 inherit;
+  border: 1px solid color-mix(in srgb, CanvasText 22%, transparent);
+  background: Canvas; color: CanvasText;
+  display: flex; align-items: center; justify-content: center;
+}
+.kill:hover { background: color-mix(in srgb, CanvasText 12%, Canvas); }
+#row { display: flex; align-items: center; gap: 8px; }
 #field {
-  position: absolute; left: 16px; top: 12px; width: 292px; height: 24px;
+  flex: 1; min-width: 0; height: 28px;
   border: 0; outline: 0; background: transparent; color: inherit; font: inherit; padding: 0;
 }
 #field::placeholder { color: color-mix(in srgb, CanvasText 45%, transparent); }
 #chip {
-  position: absolute; left: 14px; bottom: 10px; max-width: 280px; height: 20px; padding: 0;
+  align-self: flex-start; max-width: 100%; height: 20px; padding: 0;
   border: 0; background: transparent; cursor: pointer; font: 13px inherit;
   color: color-mix(in srgb, CanvasText 55%, transparent);
   display: flex; align-items: center; gap: 4px;
 }
-#chipText { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 250px; }
+#chipText { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #send {
-  position: absolute; right: 16px; top: 22px; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%;
+  flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%;
   background: #0a84ff; cursor: pointer; display: flex; align-items: center; justify-content: center;
   opacity: .35;
 }
 #send.ready { opacity: 1; }
+/* One picture, full size: the window grows to the preview and the card steps aside. */
+#preview {
+  position: absolute; inset: 0; box-sizing: border-box; border-radius: 16px;
+  background: Canvas; border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+  padding: 12px; cursor: zoom-out;
+  display: flex; align-items: center; justify-content: center;
+}
+#preview[hidden] { display: none; }
+#previewShot { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; }
